@@ -1,0 +1,7 @@
+build/
+build-release/
+build-icon-renderer/
+dist/
+resources/macos/*.iconset/
+scripts/macos_sign_dmg_notarize.sh
+.DS_Store
