@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(mdv VERSION 0.1.0 LANGUAGES C CXX)
+project(mdv VERSION 0.1.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -41,6 +41,7 @@ target_link_libraries(mdv PRIVATE
 target_compile_definitions(mdv PRIVATE MDV_VERSION="${PROJECT_VERSION}")
 
 set_target_properties(mdv PROPERTIES
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/resources/macos/Info.plist.in"
     MACOSX_BUNDLE_GUI_IDENTIFIER "com.fukuyori.mdv"
     MACOSX_BUNDLE_BUNDLE_NAME "mdv"
     MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"

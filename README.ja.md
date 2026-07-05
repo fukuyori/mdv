@@ -62,13 +62,16 @@ open build/mdv.app
 ./build/mdv
 ```
 
-引数にファイルを渡すと直接開けます(相対パスはカレントディレクトリ基準で
-解決されるので、macOS のターミナルからはバンドル内のバイナリを実行してください):
+引数にファイルを渡すと直接開けます:
 
 ```sh
-build/mdv.app/Contents/MacOS/mdv README.md   # macOS
+open -a mdv README.md                        # macOS(インストール済みアプリ)
+build/mdv.app/Contents/MacOS/mdv README.md   # macOS(バイナリ直接実行)
 ./build/mdv README.md                        # その他
 ```
+
+macOS では Finder の「このアプリケーションで開く」や、Dock アイコンへの
+ドロップでもファイルを開けます。
 
 編集ペインを隠したビュワーモードで起動:
 

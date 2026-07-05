@@ -63,14 +63,16 @@ Other platforms:
 ./build/mdv
 ```
 
-Open a file directly by passing it as an argument (relative paths are
-resolved against the current directory, so run the binary inside the
-bundle when launching from a terminal on macOS):
+Open a file directly by passing it as an argument:
 
 ```sh
-build/mdv.app/Contents/MacOS/mdv README.md   # macOS
+open -a mdv README.md                        # macOS (installed app)
+build/mdv.app/Contents/MacOS/mdv README.md   # macOS (direct binary)
 ./build/mdv README.md                        # other platforms
 ```
+
+On macOS the app also accepts files from Finder ("Open With") and from
+drops onto its Dock icon.
 
 Start in viewer mode, with the editor pane hidden:
 

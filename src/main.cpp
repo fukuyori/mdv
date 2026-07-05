@@ -12,6 +12,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFileOpenEvent>
 #include <QFont>
 #include <QFontDialog>
 #include <QGridLayout>
@@ -52,7 +53,7 @@
 #include "md4c-html.h"
 
 #ifndef MDV_VERSION
-#define MDV_VERSION "0.1.0"
+#define MDV_VERSION "0.1.1"
 #endif
 
 // JS-to-C++ channel: the preview page reports user scrolls through this
@@ -219,6 +220,18 @@ public:
             return;
         }
         loadFile(info.absoluteFilePath());
+    }
+
+    // Files handed over by the OS (open -a, Finder "Open With", Dock drops)
+    // arrive while the app may already be editing something.
+    void openFileFromOsRequest(const QString &path)
+    {
+        if (!confirmDiscardChanges()) {
+            return;
+        }
+        openFileFromCommandLine(path);
+        raise();
+        activateWindow();
     }
 
 protected:
@@ -1869,10 +1882,35 @@ private:
     QAction *japaneseLanguageAction_ = nullptr;
 };
 
+// macOS delivers files opened via `open -a`, Finder, or Dock drops as
+// QFileOpenEvent instead of command-line arguments.
+class MdvApplication : public QApplication {
+public:
+    using QApplication::QApplication;
+
+    std::function<void(const QString &)> fileOpenHandler;
+    QString pendingFileOpen;
+
+protected:
+    bool event(QEvent *event) override
+    {
+        if (event->type() == QEvent::FileOpen) {
+            const QString path = static_cast<QFileOpenEvent *>(event)->file();
+            if (fileOpenHandler) {
+                fileOpenHandler(path);
+            } else {
+                pendingFileOpen = path;
+            }
+            return true;
+        }
+        return QApplication::event(event);
+    }
+};
+
 int main(int argc, char *argv[])
 {
     QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
-    QApplication app(argc, argv);
+    MdvApplication app(argc, argv);
     QApplication::setOrganizationName("mdv");
     QApplication::setApplicationName("mdv");
     QApplication::setApplicationVersion(QString::fromUtf8(MDV_VERSION));
@@ -1888,8 +1926,15 @@ int main(int argc, char *argv[])
     parser.process(app);
 
     MainWindow window(parser.isSet(viewerModeOption));
+    app.fileOpenHandler = [&window](const QString &path) {
+        window.openFileFromOsRequest(path);
+    };
+
     const QStringList positional = parser.positionalArguments();
-    if (!positional.isEmpty()) {
+    if (!app.pendingFileOpen.isEmpty()) {
+        window.openFileFromCommandLine(app.pendingFileOpen);
+        app.pendingFileOpen.clear();
+    } else if (!positional.isEmpty()) {
         window.openFileFromCommandLine(positional.first());
     }
     window.show();
