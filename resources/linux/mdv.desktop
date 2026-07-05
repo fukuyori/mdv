@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=mdv
+GenericName=Markdown Viewer
+Comment=Simple Markdown viewer/editor
+Exec=mdv %f
+Icon=mdv
+Terminal=false
+Categories=Office;Utility;TextEditor;
+MimeType=text/markdown;text/x-markdown;
+Keywords=markdown;md;viewer;editor;preview;
+StartupWMClass=mdv
