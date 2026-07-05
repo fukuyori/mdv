@@ -47,8 +47,10 @@ command -v macdeployqt >/dev/null 2>&1 || {
 rm -rf "$DIST_DIR"
 mkdir -p "$STAGE_DIR"
 cp -R "$APP_SOURCE" "$APP_PATH"
+find "$APP_PATH" -name "_CodeSignature" -type d -prune -exec rm -rf {} +
 
-macdeployqt "$APP_PATH" -verbose=1 -no-plugins
+macdeployqt "$APP_PATH" -verbose=1 -no-plugins -no-codesign
+find "$APP_PATH" -name "_CodeSignature" -type d -prune -exec rm -rf {} +
 
 qt_plugin_dir() {
   if command -v qtpaths >/dev/null 2>&1; then

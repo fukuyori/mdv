@@ -17,11 +17,12 @@ cmake_args=(
   -S "$ROOT_DIR"
   -B "$BUILD_DIR"
   -DCMAKE_BUILD_TYPE="$CONFIG"
+  -DCMAKE_DISABLE_FIND_PACKAGE_WrapVulkanHeaders=ON
 )
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
   cmake_args+=(
-    -DCMAKE_OSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
+    -DCMAKE_OSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-26.0}"
   )
 fi
 
