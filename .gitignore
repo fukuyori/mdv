@@ -1,5 +1,7 @@
 build/
 build-release/
+build-windows*/
+build-inno-installer/
 build-icon-renderer/
 dist/
 resources/macos/*.iconset/

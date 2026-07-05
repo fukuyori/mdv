@@ -17,8 +17,9 @@ NOTARY_PROFILE="${NOTARY_PROFILE:-notarytool}"
 ENTITLEMENTS="${ENTITLEMENTS:-"$ROOT_DIR/scripts/macos/entitlements.plist"}"
 APP_SOURCE="$BUILD_DIR/$APP_NAME.app"
 APP_PATH="$STAGE_DIR/$APP_NAME.app"
-DMG_RW="$DIST_DIR/$APP_NAME-$VERSION-rw.dmg"
-DMG_FINAL="$DIST_DIR/$APP_NAME-$VERSION.dmg"
+DMG_BASENAME="${DMG_BASENAME:-${APP_NAME}-${VERSION}-macos-arm}"
+DMG_RW="$DIST_DIR/$DMG_BASENAME-rw.dmg"
+DMG_FINAL="$DIST_DIR/$DMG_BASENAME.dmg"
 
 detect_identity() {
   security find-identity -v -p codesigning \

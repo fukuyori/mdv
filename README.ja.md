@@ -126,6 +126,8 @@ scripts/macos_generate_icon.sh
 scripts/macos_sign_dmg_notarize.sh
 ```
 
+DMG は `dist/macos/mdv-<version>-macos-arm.dmg` として出力されます。
+
 公証スクリプトは既定で `notarytool` という名前で保存された notarytool
 プロファイルを使います。必要に応じて環境変数で上書きできます:
 
@@ -137,3 +139,25 @@ scripts/macos_sign_dmg_notarize.sh
 
 `scripts/macos/entitlements.plist` の Hardened Runtime エンタイトルメントには、
 Qt WebEngine(Chromium)が必要とする JIT 関連のキーが含まれています。
+
+Windows の Release ビルド:
+
+```powershell
+.\scripts\build-windows.ps1
+```
+
+Release ビルドを作成し、`windeployqt` で Qt ランタイムを
+`dist\mdv-windows-x64` に配置します。
+
+Inno Setup で Windows インストーラーを作成:
+
+```powershell
+.\scripts\package-windows-inno.ps1
+```
+
+インストーラースクリプトは `CMakeLists.txt` からバージョンを読み取り、
+`dist\mdv-windows-x64` にある既存のペイロードを使います。その後
+`build-inno-installer\mdv.iss` を生成し、`dist\mdiv-<version>-windows-x64.exe` を
+出力します。先に `.\scripts\build-windows.ps1` を実行してください。
+パッケージ作成時に明示的に再ビルドしたい場合だけ `-Build` を指定します。
+Inno Setup を実行せず `.iss` だけ生成する場合は `-GenerateOnly` を指定してください。

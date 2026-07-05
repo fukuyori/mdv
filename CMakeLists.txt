@@ -1,12 +1,16 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(mdv VERSION 0.1.1 LANGUAGES C CXX)
+project(mdv VERSION 0.1.2 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
+
+if(WIN32)
+    enable_language(RC)
+endif()
 
 find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets WebEngineWidgets WebChannel)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets WebEngineWidgets WebChannel)
@@ -25,6 +29,11 @@ if(APPLE)
     )
     set_source_files_properties(resources/macos/mdv.icns PROPERTIES
         MACOSX_PACKAGE_LOCATION "Resources"
+    )
+elseif(WIN32)
+    add_executable(mdv
+        src/main.cpp
+        resources/windows/mdv.rc
     )
 else()
     add_executable(mdv
@@ -48,6 +57,10 @@ set_target_properties(mdv PROPERTIES
     MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
     MACOSX_BUNDLE_ICON_FILE "mdv.icns"
 )
+
+if(WIN32)
+    set_target_properties(mdv PROPERTIES WIN32_EXECUTABLE ON)
+endif()
 
 if(QT_VERSION_MAJOR EQUAL 6)
     qt_finalize_executable(mdv)

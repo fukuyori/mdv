@@ -127,6 +127,8 @@ Sign, create a DMG, submit it for notarization, and staple the notarization tick
 scripts/macos_sign_dmg_notarize.sh
 ```
 
+The DMG is written as `dist/macos/mdv-<version>-macos-arm.dmg`.
+
 The notarization script uses the saved notarytool profile named `notarytool` by default. Override signing settings with environment variables when needed:
 
 ```sh
@@ -137,3 +139,25 @@ scripts/macos_sign_dmg_notarize.sh
 
 The hardened-runtime entitlements in `scripts/macos/entitlements.plist`
 include the JIT entitlements that Qt WebEngine (Chromium) requires.
+
+Windows Release build:
+
+```powershell
+.\scripts\build-windows.ps1
+```
+
+This creates a Release build and deploys the Qt runtime with `windeployqt`
+under `dist\mdv-windows-x64`.
+
+Create a Windows installer with Inno Setup:
+
+```powershell
+.\scripts\package-windows-inno.ps1
+```
+
+The installer script reads the version from `CMakeLists.txt`, uses the
+existing payload under `dist\mdv-windows-x64`, generates
+`build-inno-installer\mdv.iss`, and writes `dist\mdiv-<version>-windows-x64.exe`.
+Run `.\scripts\build-windows.ps1` first, or pass `-Build` when you explicitly
+want packaging to rebuild the payload. Use `-GenerateOnly` to generate the
+`.iss` file without invoking Inno Setup.

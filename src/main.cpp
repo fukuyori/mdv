@@ -21,6 +21,7 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLocale>
 #include <QMainWindow>
 #include <QMenu>
 #include <QMenuBar>
@@ -53,7 +54,7 @@
 #include "md4c-html.h"
 
 #ifndef MDV_VERSION
-#define MDV_VERSION "0.1.1"
+#define MDV_VERSION "0.1.2"
 #endif
 
 // JS-to-C++ channel: the preview page reports user scrolls through this
@@ -1140,7 +1141,9 @@ private:
         QSettings settings;
         currentTheme_ = settings.value("theme", "light").toString();
         fontSize_ = settings.value("fontSize", defaultFontSize_).toInt();
-        currentLanguage_ = settings.value("language", "en").toString();
+        currentLanguage_ = settings.contains("language")
+            ? settings.value("language").toString()
+            : defaultLanguageForSystem();
         editorVisible_ = settings.value("editorVisible", true).toBool();
         editorFontFamily_ = settings.value("editorFontFamily", defaultEditorFontFamily()).toString();
         previewFontFamily_ = settings.value("previewFontFamily", defaultPreviewFontFamily()).toString();
@@ -1158,6 +1161,11 @@ private:
             previewFontFamily_ = defaultPreviewFontFamily();
         }
         fontSize_ = qBound(minFontSize_, fontSize_, maxFontSize_);
+    }
+
+    QString defaultLanguageForSystem() const
+    {
+        return QLocale::system().language() == QLocale::Japanese ? "ja" : "en";
     }
 
     void saveViewSettings()
