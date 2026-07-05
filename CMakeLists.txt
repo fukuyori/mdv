@@ -25,6 +25,7 @@ target_include_directories(md4c PUBLIC third_party/md4c)
 if(APPLE)
     add_executable(mdv MACOSX_BUNDLE
         src/main.cpp
+        resources/mdv.qrc
         resources/macos/mdv.icns
     )
     set_source_files_properties(resources/macos/mdv.icns PROPERTIES
@@ -33,11 +34,13 @@ if(APPLE)
 elseif(WIN32)
     add_executable(mdv
         src/main.cpp
+        resources/mdv.qrc
         resources/windows/mdv.rc
     )
 else()
     add_executable(mdv
         src/main.cpp
+        resources/mdv.qrc
     )
 endif()
 

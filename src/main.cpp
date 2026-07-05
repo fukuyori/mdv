@@ -16,6 +16,7 @@
 #include <QFont>
 #include <QFontDialog>
 #include <QGridLayout>
+#include <QIcon>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -1227,7 +1228,10 @@ private:
         currentFont.setStyleHint(QFont::Monospace);
 
         bool ok = false;
-        const QFont selectedFont = QFontDialog::getFont(&ok, currentFont, this, uiText("editorFont"));
+        // Use Qt's own dialog: the GTK native font chooser previews a localized
+        // (Japanese) sample string that Latin-only fonts render as tofu.
+        const QFont selectedFont = QFontDialog::getFont(
+            &ok, currentFont, this, uiText("editorFont"), QFontDialog::DontUseNativeDialog);
         if (!ok) {
             return;
         }
@@ -1243,7 +1247,8 @@ private:
         QFont currentFont(previewFontFamily_, fontSize_);
 
         bool ok = false;
-        const QFont selectedFont = QFontDialog::getFont(&ok, currentFont, this, uiText("previewFont"));
+        const QFont selectedFont = QFontDialog::getFont(
+            &ok, currentFont, this, uiText("previewFont"), QFontDialog::DontUseNativeDialog);
         if (!ok) {
             return;
         }
@@ -1922,6 +1927,8 @@ int main(int argc, char *argv[])
     QApplication::setOrganizationName("mdv");
     QApplication::setApplicationName("mdv");
     QApplication::setApplicationVersion(QString::fromUtf8(MDV_VERSION));
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/icon.svg")));
+    QGuiApplication::setDesktopFileName(QStringLiteral("mdv"));
 
     QCommandLineParser parser;
     parser.setApplicationDescription("Simple Markdown viewer/editor");
