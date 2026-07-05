@@ -4,6 +4,16 @@ Simple Markdown viewer/editor built with C++ and Qt Widgets.
 
 English | [日本語](README.ja.md)
 
+## Screenshots
+
+Editor with live preview:
+
+![mdv editor and preview](images/screenshot1.png)
+
+Viewer mode (`-v`), with the editor pane hidden:
+
+![mdv viewer mode](images/screenshot2.png)
+
 ## Features
 
 - Edit Markdown in the left pane
