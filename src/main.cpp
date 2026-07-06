@@ -69,7 +69,7 @@
 #include "md4c-html.h"
 
 #ifndef MDV_VERSION
-#define MDV_VERSION "0.2.0"
+#define MDV_VERSION "0.2.1"
 #endif
 
 // JS-to-C++ channel: the preview page reports user scrolls through this
@@ -443,6 +443,9 @@ public:
         updateOutline();
         updatePreview();
         updateWindowTitle();
+
+        versionLabel_ = new QLabel(QStringLiteral("mdv %1").arg(QString::fromUtf8(MDV_VERSION)), this);
+        statusBar()->addPermanentWidget(versionLabel_);
 
         resize(1100, 720);
         showReadyStatus();
@@ -1640,6 +1643,7 @@ private:
         if (currentTheme_ == "dark") {
             setStyleSheet(
                 "QMainWindow, QMenuBar, QMenu, QStatusBar { background: #202124; color: #e8eaed; }"
+                "QStatusBar QLabel { color: #e8eaed; }"
                 "QWidget#previewBar { background: #202124; }"
                 "QPlainTextEdit, QTreeWidget { background: #1f1f1f; color: #e8eaed; border: 1px solid #3c4043; selection-background-color: #34517a; }"
                 "QLineEdit, QCheckBox, QPushButton, QComboBox { background: #2b2c2f; color: #e8eaed; border: 1px solid #5f6368; padding: 3px; }"
@@ -1649,6 +1653,7 @@ private:
         } else if (currentTheme_ == "sepia") {
             setStyleSheet(
                 "QMainWindow, QMenuBar, QMenu, QStatusBar { background: #f3ead7; color: #43372b; }"
+                "QStatusBar QLabel { color: #43372b; }"
                 "QWidget#previewBar { background: #f3ead7; }"
                 "QPlainTextEdit, QTreeWidget { background: #fbf4e6; color: #43372b; border: 1px solid #d4c2a3; selection-background-color: #d8c49a; }"
                 "QLineEdit, QCheckBox, QPushButton, QComboBox { background: #fbf4e6; color: #43372b; border: 1px solid #d4c2a3; padding: 3px; }"
@@ -1658,6 +1663,7 @@ private:
         } else {
             setStyleSheet(
                 "QMainWindow, QMenuBar, QMenu, QStatusBar { background: #f6f7f9; color: #202124; }"
+                "QStatusBar QLabel { color: #202124; }"
                 "QWidget#previewBar { background: #f6f7f9; }"
                 "QPlainTextEdit, QTreeWidget { background: #ffffff; color: #202124; border: 1px solid #d0d4dc; selection-background-color: #cfe3ff; selection-color: #111827; }"
                 "QLineEdit, QCheckBox, QPushButton, QComboBox { background: #ffffff; color: #202124; border: 1px solid #d0d4dc; padding: 3px; }"
@@ -2495,6 +2501,7 @@ private:
     }
 
     QTreeWidget *outline_ = nullptr;
+    QLabel *versionLabel_ = nullptr;
     QPlainTextEdit *editor_ = nullptr;
     QWebEngineView *preview_ = nullptr;
     QTimer *previewUpdateTimer_ = nullptr;
@@ -2631,8 +2638,18 @@ int main(int argc, char *argv[])
         QStringList() << "v" << "viewer",
         "Start with the editor pane hidden.");
     parser.addOption(viewerModeOption);
+    QCommandLineOption versionOption(
+        QStringList() << "version",
+        "Displays version information.");
+    parser.addOption(versionOption);
     parser.addPositionalArgument("file", "Markdown file to open.", "[file]");
     parser.process(app);
+
+    if (parser.isSet(versionOption)) {
+        QTextStream(stdout) << QApplication::applicationName() << " "
+                             << QApplication::applicationVersion() << Qt::endl;
+        return 0;
+    }
 
     MainWindow window(parser.isSet(viewerModeOption));
     app.fileOpenHandler = [&window](const QString &path) {
