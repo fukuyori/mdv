@@ -2,7 +2,7 @@
 
 Simple Markdown viewer/editor built with C++ and Qt Widgets.
 
-English | [日本語](README.ja.md)
+English | [日本語](README.ja.md) | [Changelog](CHANGELOG.md)
 
 ## Screenshots
 
@@ -37,12 +37,16 @@ Viewer mode (`-v`), with the editor pane hidden:
 - Switch between light, dark, and sepia themes
 - Change editor, outline, and preview font size
 - Choose editor and preview fonts
+- Translate the preview with a local [Ollama](https://ollama.com) server:
+  switch between original, bilingual (original and translation interleaved),
+  and translation-only views with buttons above the preview
+  (see [Translation](#translation))
 - Switch the UI language between English and Japanese
 - Show or hide the editor pane
 
 ## Build
 
-Requires Qt with the WebEngine and WebChannel modules (`brew install qt` on macOS).
+Requires Qt with the WebEngine, WebChannel, and Network modules (`brew install qt` on macOS).
 
 ```sh
 cmake -S . -B build
@@ -85,6 +89,30 @@ The Open and Save As dialogs start in the current working directory (home
 when the app is launched from Finder) and then follow the directory you
 last used; Save As keeps only the file name of the open document, so an
 opened file's location never overrides your chosen save directory.
+
+## Translation
+
+The preview can be translated with a local [Ollama](https://ollama.com)
+server. Install Ollama, pull a model (for example
+`ollama pull translategemma`), and make sure the server is running.
+
+Use the buttons above the preview (or the Translation menu) to switch views:
+
+- **Original** - the plain preview
+- **Bilingual** - each block of the original followed by its translation
+- **Translation** - translated text only
+
+Translation > Translation Settings configures the endpoint (default
+`http://127.0.0.1:11434`), the model (installed models are listed
+automatically), the target language, and the number of parallel requests
+(1-8; values above 1 only help when the server itself is started with
+`OLLAMA_NUM_PARALLEL` greater than 1).
+
+Blocks are translated in reading order starting from the part currently on
+screen, results appear as they arrive, and translations are cached per
+block, so editing retranslates only the blocks that changed. A block whose
+translation fails is shown untranslated with a "(translation failed)"
+marker in the bilingual view; the rest of the document continues.
 
 ## Project Structure
 

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(mdv VERSION 0.1.2 LANGUAGES C CXX)
+project(mdv VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,8 +12,8 @@ if(WIN32)
     enable_language(RC)
 endif()
 
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets WebEngineWidgets WebChannel)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets WebEngineWidgets WebChannel)
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets WebEngineWidgets WebChannel Network)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets WebEngineWidgets WebChannel Network)
 
 add_library(md4c STATIC
     third_party/md4c/md4c.c
@@ -48,6 +48,7 @@ target_link_libraries(mdv PRIVATE
     Qt${QT_VERSION_MAJOR}::Widgets
     Qt${QT_VERSION_MAJOR}::WebEngineWidgets
     Qt${QT_VERSION_MAJOR}::WebChannel
+    Qt${QT_VERSION_MAJOR}::Network
     md4c
 )
 target_compile_definitions(mdv PRIVATE MDV_VERSION="${PROJECT_VERSION}")

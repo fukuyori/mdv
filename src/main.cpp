@@ -4,10 +4,12 @@
 #include <QCheckBox>
 #include <QClipboard>
 #include <QCloseEvent>
+#include <QComboBox>
 #include <QCommandLineParser>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
@@ -16,10 +18,12 @@
 #include <QFont>
 #include <QFontDialog>
 #include <QGridLayout>
+#include <QHBoxLayout>
 #include <QIcon>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
@@ -28,11 +32,17 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QScrollBar>
+#include <QSet>
 #include <QSettings>
+#include <QSpinBox>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QStringConverter>
@@ -41,21 +51,25 @@
 #include <QTextDocument>
 #include <QTextStream>
 #include <QTimer>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QUrl>
+#include <QVBoxLayout>
 #include <QVector>
 #include <QWebChannel>
 #include <QWebEnginePage>
 #include <QWebEngineSettings>
 #include <QWebEngineView>
 
+#include <algorithm>
+#include <climits>
 #include <functional>
 
 #include "md4c-html.h"
 
 #ifndef MDV_VERSION
-#define MDV_VERSION "0.1.2"
+#define MDV_VERSION "0.2.0"
 #endif
 
 // JS-to-C++ channel: the preview page reports user scrolls through this
@@ -104,6 +118,177 @@ protected:
     }
 };
 
+// Translates markdown fragments through a local Ollama server, keeping up
+// to two requests in flight so the HTTP round-trip overlaps generation.
+// Results are keyed, so out-of-order completion is fine.
+class OllamaTranslator : public QObject {
+    Q_OBJECT
+
+public:
+    explicit OllamaTranslator(QObject *parent = nullptr)
+        : QObject(parent)
+        , manager_(new QNetworkAccessManager(this))
+    {
+        // Local models can take minutes per block on CPU-only machines.
+        manager_->setTransferTimeout(300000);
+    }
+
+    void configure(const QString &endpoint, const QString &model, const QString &targetLanguage)
+    {
+        endpoint_ = endpoint;
+        model_ = model;
+        targetLanguage_ = targetLanguage;
+    }
+
+    void setMaxInFlight(int count)
+    {
+        maxInFlight_ = qBound(1, count, 8);
+        fillSlots();
+    }
+
+    void requestTranslation(const QString &key, const QString &markdown)
+    {
+        queue_.append({key, markdown});
+        fillSlots();
+    }
+
+    // Reorders waiting jobs so the ones nearest the reader's viewport run
+    // first; keys not listed keep their relative order at the back.
+    void prioritize(const QStringList &orderedKeys)
+    {
+        if (queue_.size() < 2) {
+            return;
+        }
+        QHash<QString, int> rank;
+        rank.reserve(orderedKeys.size());
+        for (int i = 0; i < orderedKeys.size(); ++i) {
+            rank.insert(orderedKeys.at(i), i);
+        }
+        std::stable_sort(queue_.begin(), queue_.end(), [&rank](const Job &a, const Job &b) {
+            return rank.value(a.key, INT_MAX) < rank.value(b.key, INT_MAX);
+        });
+    }
+
+    void cancelAll()
+    {
+        queue_.clear();
+        cancelling_ = true;
+        const QList<QNetworkReply *> active = active_.values();
+        for (QNetworkReply *reply : active) {
+            reply->abort();
+        }
+        cancelling_ = false;
+    }
+
+signals:
+    void translated(const QString &key, const QString &markdown);
+    void blockFailed(const QString &key, const QString &error);
+    void failed(const QString &error);
+
+private:
+    struct Job {
+        QString key;
+        QString text;
+    };
+
+    void fillSlots()
+    {
+        while (active_.size() < maxInFlight_ && !queue_.isEmpty()) {
+            sendOne(queue_.takeFirst());
+        }
+    }
+
+    void sendOne(const Job &job)
+    {
+        QNetworkRequest request(QUrl(endpoint_ + "/api/chat"));
+        request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+        const QJsonObject payload{
+            {"model", model_},
+            {"stream", false},
+            {"messages", QJsonArray{
+                QJsonObject{{"role", "system"}, {"content", systemPrompt()}},
+                QJsonObject{{"role", "user"}, {"content", job.text}},
+            }},
+            {"options", QJsonObject{{"temperature", 0.2}}},
+        };
+
+        QNetworkReply *reply = manager_->post(request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+        active_.insert(reply);
+        connect(reply, &QNetworkReply::finished, this, [this, job, reply] {
+            active_.remove(reply);
+            reply->deleteLater();
+
+            // Deliberate cancellation (mode switch, shutdown): drop silently.
+            if (reply->error() == QNetworkReply::OperationCanceledError && cancelling_) {
+                return;
+            }
+
+            const QByteArray body = reply->readAll();
+            if (reply->error() != QNetworkReply::NoError) {
+                if (isFatal(reply->error())) {
+                    // Server unreachable: nothing else will succeed either.
+                    cancelAll();
+                    emit failed(reply->errorString());
+                    return;
+                }
+                // Per-block problem (transient 500, timeout, oversized
+                // block): skip this block and keep going. Ollama reports the
+                // useful message ("model not found" etc.) in the response
+                // body rather than the HTTP reason phrase.
+                const QString serverError = QJsonDocument::fromJson(body).object().value("error").toString();
+                emit blockFailed(job.key, serverError.isEmpty() ? reply->errorString() : serverError);
+                fillSlots();
+                return;
+            }
+
+            QString text = QJsonDocument::fromJson(body).object()
+                .value("message").toObject().value("content").toString();
+            // Reasoning models may prefix their answer with a think block.
+            static const QRegularExpression thinkBlock(
+                QStringLiteral("<think>.*</think>"),
+                QRegularExpression::DotMatchesEverythingOption);
+            text.remove(thinkBlock);
+            text = text.trimmed();
+
+            if (text.isEmpty()) {
+                emit blockFailed(job.key, QStringLiteral("empty response"));
+            } else {
+                emit translated(job.key, text);
+            }
+            fillSlots();
+        });
+    }
+
+    static bool isFatal(QNetworkReply::NetworkError error)
+    {
+        return error == QNetworkReply::ConnectionRefusedError
+            || error == QNetworkReply::HostNotFoundError
+            || error == QNetworkReply::ProtocolUnknownError
+            || error == QNetworkReply::ProtocolInvalidOperationError;
+    }
+
+    QString systemPrompt() const
+    {
+        return QStringLiteral(
+            "You are a professional translator. Translate the Markdown fragment "
+            "given by the user into %1. Preserve all Markdown syntax, inline code, "
+            "code blocks, link URLs, image paths, and HTML tags exactly as they are. "
+            "Do not translate the contents of code spans or code blocks. "
+            "Output only the translated Markdown, with no explanations or preamble.")
+            .arg(targetLanguage_);
+    }
+
+    QNetworkAccessManager *manager_ = nullptr;
+    QSet<QNetworkReply *> active_;
+    bool cancelling_ = false;
+    int maxInFlight_ = 2;
+    QList<Job> queue_;
+    QString endpoint_;
+    QString model_;
+    QString targetLanguage_;
+};
+
 class MainWindow : public QMainWindow {
 public:
     explicit MainWindow(bool startWithEditorHidden = false)
@@ -144,6 +329,17 @@ public:
         channel->registerObject(QStringLiteral("mdv"), bridge);
         preview_->page()->setWebChannel(channel);
 
+        translator_ = new OllamaTranslator(this);
+        connect(translator_, &OllamaTranslator::translated, this, [this](const QString &key, const QString &text) {
+            onBlockTranslated(key, text);
+        });
+        connect(translator_, &OllamaTranslator::blockFailed, this, [this](const QString &key, const QString &error) {
+            onBlockFailed(key, error);
+        });
+        connect(translator_, &OllamaTranslator::failed, this, [this](const QString &error) {
+            onTranslationFailed(error);
+        });
+
         previewUpdateTimer_ = new QTimer(this);
         previewUpdateTimer_->setSingleShot(true);
         previewUpdateTimer_->setInterval(120);
@@ -152,10 +348,47 @@ public:
             updatePreview();
         });
 
+        translationPriorityTimer_ = new QTimer(this);
+        translationPriorityTimer_->setSingleShot(true);
+        translationPriorityTimer_->setInterval(400);
+        connect(translationPriorityTimer_, &QTimer::timeout, this, [this] {
+            reprioritizeTranslations();
+        });
+
+        auto *previewContainer = new QWidget(this);
+        auto *previewLayout = new QVBoxLayout(previewContainer);
+        previewLayout->setContentsMargins(0, 0, 0, 0);
+        previewLayout->setSpacing(0);
+
+        auto *previewBar = new QWidget(previewContainer);
+        previewBar->setObjectName(QStringLiteral("previewBar"));
+        auto *previewBarLayout = new QHBoxLayout(previewBar);
+        previewBarLayout->setContentsMargins(6, 4, 6, 4);
+        previewBarLayout->setSpacing(4);
+
+        originalModeButton_ = new QToolButton(previewBar);
+        bilingualModeButton_ = new QToolButton(previewBar);
+        translatedModeButton_ = new QToolButton(previewBar);
+        for (QToolButton *button : {originalModeButton_, bilingualModeButton_, translatedModeButton_}) {
+            button->setCheckable(true);
+            button->setAutoExclusive(true);
+            button->setFocusPolicy(Qt::NoFocus);
+            previewBarLayout->addWidget(button);
+        }
+        originalModeButton_->setChecked(true);
+        previewBarLayout->addStretch();
+
+        connect(originalModeButton_, &QToolButton::clicked, this, [this] { setPreviewMode("original"); });
+        connect(bilingualModeButton_, &QToolButton::clicked, this, [this] { setPreviewMode("bilingual"); });
+        connect(translatedModeButton_, &QToolButton::clicked, this, [this] { setPreviewMode("translated"); });
+
+        previewLayout->addWidget(previewBar);
+        previewLayout->addWidget(preview_, 1);
+
         splitter_ = new QSplitter(this);
         splitter_->addWidget(outline_);
         splitter_->addWidget(editor_);
-        splitter_->addWidget(preview_);
+        splitter_->addWidget(previewContainer);
         splitter_->setStretchFactor(0, 0);
         splitter_->setStretchFactor(1, 1);
         splitter_->setStretchFactor(2, 1);
@@ -189,6 +422,7 @@ public:
             if (!syncingEditorFromPreview_) {
                 syncPreviewToEditor();
             }
+            translationPriorityTimer_->start();
         });
 
         connect(outline_, &QTreeWidget::itemActivated, this, [this](QTreeWidgetItem *item) {
@@ -374,6 +608,32 @@ private:
             saveViewSettings();
         });
 
+        translationModeGroup_ = new QActionGroup(this);
+        translationModeGroup_->setExclusive(true);
+
+        originalModeAction_ = new QAction(this);
+        originalModeAction_->setCheckable(true);
+        originalModeAction_->setChecked(true);
+        originalModeAction_->setData("original");
+        translationModeGroup_->addAction(originalModeAction_);
+
+        bilingualModeAction_ = new QAction(this);
+        bilingualModeAction_->setCheckable(true);
+        bilingualModeAction_->setData("bilingual");
+        translationModeGroup_->addAction(bilingualModeAction_);
+
+        translatedModeAction_ = new QAction(this);
+        translatedModeAction_->setCheckable(true);
+        translatedModeAction_->setData("translated");
+        translationModeGroup_->addAction(translatedModeAction_);
+
+        connect(translationModeGroup_, &QActionGroup::triggered, this, [this](QAction *action) {
+            setPreviewMode(action->data().toString());
+        });
+
+        translationSettingsAction_ = new QAction(this);
+        connect(translationSettingsAction_, &QAction::triggered, this, [this] { showTranslationSettings(); });
+
         languageActionGroup_ = new QActionGroup(this);
         languageActionGroup_->setExclusive(true);
 
@@ -422,6 +682,13 @@ private:
         searchMenu_->addAction(findPreviousAction_);
         searchMenu_->addSeparator();
         searchMenu_->addAction(replaceAction_);
+
+        translationMenu_ = menuBar()->addMenu(QString());
+        translationMenu_->addAction(originalModeAction_);
+        translationMenu_->addAction(bilingualModeAction_);
+        translationMenu_->addAction(translatedModeAction_);
+        translationMenu_->addSeparator();
+        translationMenu_->addAction(translationSettingsAction_);
 
         viewMenu_ = menuBar()->addMenu(QString());
         themeMenu_ = viewMenu_->addMenu(QString());
@@ -522,6 +789,24 @@ private:
         if (key == "copyImageFailed") return ja ? "画像ファイルをコピーできませんでした。" : "Could not copy image file.";
         if (key == "pastedImage") return ja ? "画像を貼り付けました: %1" : "Pasted image %1";
         if (key == "viewStatus") return ja ? "テーマ: %1, 文字サイズ: %2pt" : "Theme: %1, font size: %2pt";
+        if (key == "translationMenu") return ja ? "翻訳(&T)" : "&Translation";
+        if (key == "trOriginal") return ja ? "原文" : "Original";
+        if (key == "trBilingual") return ja ? "対訳" : "Bilingual";
+        if (key == "trTranslated") return ja ? "翻訳" : "Translation";
+        if (key == "trSettings") return ja ? "翻訳の設定(&S)..." : "Translation &Settings...";
+        if (key == "trSettingsTitle") return ja ? "翻訳の設定" : "Translation Settings";
+        if (key == "trEndpoint") return ja ? "Ollama エンドポイント:" : "Ollama endpoint:";
+        if (key == "trModel") return ja ? "モデル:" : "Model:";
+        if (key == "trTarget") return ja ? "翻訳先の言語:" : "Target language:";
+        if (key == "trParallel") return ja ? "同時リクエスト数:" : "Parallel requests:";
+        if (key == "trPending") return ja ? "(翻訳中...)" : "(translating...)";
+        if (key == "trFailedBlock") return ja ? "(翻訳失敗)" : "(translation failed)";
+        if (key == "translating") return ja ? "翻訳中... 残り %1" : "Translating... %1 remaining";
+        if (key == "translationDone") return ja ? "翻訳が完了しました" : "Translation finished";
+        if (key == "translationFailedTitle") return ja ? "翻訳エラー" : "Translation error";
+        if (key == "translationFailedText") return ja
+            ? "翻訳に失敗しました:\n%1\n\nOllama が起動していること、モデル名が正しいことを確認してください。"
+            : "Translation failed:\n%1\n\nMake sure Ollama is running and the model name is correct.";
         if (key == "untitled") return ja ? "無題" : "Untitled";
         if (key == "windowTitle") return ja ? "%1%2 - mdv" : "%1%2 - mdv";
         if (key == "placeholder") {
@@ -545,6 +830,7 @@ private:
         fileMenu_->setTitle(uiText("file"));
         editMenu_->setTitle(uiText("edit"));
         searchMenu_->setTitle(uiText("search"));
+        translationMenu_->setTitle(uiText("translationMenu"));
         viewMenu_->setTitle(uiText("view"));
         themeMenu_->setTitle(uiText("theme"));
         languageMenu_->setTitle(uiText("language"));
@@ -575,6 +861,13 @@ private:
         choosePreviewFontAction_->setText(uiText("previewFont"));
         resetFontsAction_->setText(uiText("resetFonts"));
         toggleEditorAction_->setText(uiText("showEditor"));
+        originalModeAction_->setText(uiText("trOriginal"));
+        bilingualModeAction_->setText(uiText("trBilingual"));
+        translatedModeAction_->setText(uiText("trTranslated"));
+        translationSettingsAction_->setText(uiText("trSettings"));
+        originalModeButton_->setText(uiText("trOriginal"));
+        bilingualModeButton_->setText(uiText("trBilingual"));
+        translatedModeButton_->setText(uiText("trTranslated"));
 
         englishLanguageAction_->setText("English");
         japaneseLanguageAction_->setText("日本語");
@@ -1148,6 +1441,15 @@ private:
         editorVisible_ = settings.value("editorVisible", true).toBool();
         editorFontFamily_ = settings.value("editorFontFamily", defaultEditorFontFamily()).toString();
         previewFontFamily_ = settings.value("previewFontFamily", defaultPreviewFontFamily()).toString();
+        ollamaEndpoint_ = settings.value("ollamaEndpoint", defaultOllamaEndpoint()).toString();
+        ollamaModel_ = settings.value("ollamaModel").toString();
+        translationTarget_ = settings.value("translationTarget",
+            defaultLanguageForSystem() == "ja" ? "Japanese" : "English").toString();
+        ollamaParallel_ = qBound(1, settings.value("ollamaParallel", 2).toInt(), 8);
+
+        if (ollamaEndpoint_.trimmed().isEmpty()) {
+            ollamaEndpoint_ = defaultOllamaEndpoint();
+        }
 
         if (currentTheme_ != "light" && currentTheme_ != "dark" && currentTheme_ != "sepia") {
             currentTheme_ = "light";
@@ -1178,6 +1480,15 @@ private:
         settings.setValue("editorVisible", editorVisible_);
         settings.setValue("editorFontFamily", editorFontFamily_);
         settings.setValue("previewFontFamily", previewFontFamily_);
+        settings.setValue("ollamaEndpoint", ollamaEndpoint_);
+        settings.setValue("ollamaModel", ollamaModel_);
+        settings.setValue("translationTarget", translationTarget_);
+        settings.setValue("ollamaParallel", ollamaParallel_);
+    }
+
+    static QString defaultOllamaEndpoint()
+    {
+        return QStringLiteral("http://127.0.0.1:11434");
     }
 
     void updateViewActions()
@@ -1329,24 +1640,33 @@ private:
         if (currentTheme_ == "dark") {
             setStyleSheet(
                 "QMainWindow, QMenuBar, QMenu, QStatusBar { background: #202124; color: #e8eaed; }"
+                "QWidget#previewBar { background: #202124; }"
                 "QPlainTextEdit, QTreeWidget { background: #1f1f1f; color: #e8eaed; border: 1px solid #3c4043; selection-background-color: #34517a; }"
-                "QLineEdit, QCheckBox, QPushButton { background: #2b2c2f; color: #e8eaed; border: 1px solid #5f6368; padding: 3px; }"
+                "QLineEdit, QCheckBox, QPushButton, QComboBox { background: #2b2c2f; color: #e8eaed; border: 1px solid #5f6368; padding: 3px; }"
+                "QToolButton { background: #2b2c2f; color: #e8eaed; border: 1px solid #5f6368; padding: 3px 10px; }"
+                "QToolButton:checked { background: #34517a; }"
                 "QTreeWidget::item:selected { background: #34517a; }");
         } else if (currentTheme_ == "sepia") {
             setStyleSheet(
                 "QMainWindow, QMenuBar, QMenu, QStatusBar { background: #f3ead7; color: #43372b; }"
+                "QWidget#previewBar { background: #f3ead7; }"
                 "QPlainTextEdit, QTreeWidget { background: #fbf4e6; color: #43372b; border: 1px solid #d4c2a3; selection-background-color: #d8c49a; }"
-                "QLineEdit, QCheckBox, QPushButton { background: #fbf4e6; color: #43372b; border: 1px solid #d4c2a3; padding: 3px; }"
+                "QLineEdit, QCheckBox, QPushButton, QComboBox { background: #fbf4e6; color: #43372b; border: 1px solid #d4c2a3; padding: 3px; }"
+                "QToolButton { background: #fbf4e6; color: #43372b; border: 1px solid #d4c2a3; padding: 3px 10px; }"
+                "QToolButton:checked { background: #d8c49a; }"
                 "QTreeWidget::item:selected { background: #d8c49a; }");
         } else {
             setStyleSheet(
                 "QMainWindow, QMenuBar, QMenu, QStatusBar { background: #f6f7f9; color: #202124; }"
+                "QWidget#previewBar { background: #f6f7f9; }"
                 "QPlainTextEdit, QTreeWidget { background: #ffffff; color: #202124; border: 1px solid #d0d4dc; selection-background-color: #cfe3ff; selection-color: #111827; }"
-                "QLineEdit, QCheckBox, QPushButton { background: #ffffff; color: #202124; border: 1px solid #d0d4dc; padding: 3px; }"
+                "QLineEdit, QCheckBox, QPushButton, QComboBox { background: #ffffff; color: #202124; border: 1px solid #d0d4dc; padding: 3px; }"
+                "QToolButton { background: #ffffff; color: #202124; border: 1px solid #d0d4dc; padding: 3px 10px; }"
+                "QToolButton:checked { background: #cfe3ff; color: #111827; }"
                 "QTreeWidget::item:selected { background: #cfe3ff; color: #111827; }");
         }
 
-        pendingPreviewHtml_ = markdownToHtml(editor_->toPlainText());
+        pendingPreviewHtml_ = composePreviewHtml();
         reloadPreviewTemplate();
         updateViewActions();
         statusBar()->showMessage(uiText("viewStatus").arg(currentTheme_, QString::number(fontSize_)), 2000);
@@ -1401,7 +1721,10 @@ private:
 
     void updatePreview()
     {
-        pendingPreviewHtml_ = markdownToHtml(editor_->toPlainText());
+        if (previewMode_ != "original") {
+            ensureTranslations();
+        }
+        pendingPreviewHtml_ = composePreviewHtml();
 
         if (previewBaseUrl() != loadedPreviewBaseUrl_) {
             reloadPreviewTemplate();
@@ -1410,6 +1733,353 @@ private:
         if (previewLoaded_) {
             pushPreviewContent();
         }
+    }
+
+    void setPreviewMode(const QString &mode)
+    {
+        // Translating needs a model; give the user a chance to pick one first.
+        if (mode != "original" && ollamaModel_.trimmed().isEmpty()) {
+            showTranslationSettings();
+            if (ollamaModel_.trimmed().isEmpty()) {
+                updateTranslationModeUi();
+                return;
+            }
+        }
+
+        if (previewMode_ == mode) {
+            updateTranslationModeUi();
+            return;
+        }
+
+        previewMode_ = mode;
+        if (previewMode_ == "original") {
+            translator_->cancelAll();
+            pendingTranslations_.clear();
+            showReadyStatus();
+        }
+        updateTranslationModeUi();
+        updatePreview();
+    }
+
+    void updateTranslationModeUi()
+    {
+        originalModeButton_->setChecked(previewMode_ == "original");
+        bilingualModeButton_->setChecked(previewMode_ == "bilingual");
+        translatedModeButton_->setChecked(previewMode_ == "translated");
+        originalModeAction_->setChecked(previewMode_ == "original");
+        bilingualModeAction_->setChecked(previewMode_ == "bilingual");
+        translatedModeAction_->setChecked(previewMode_ == "translated");
+    }
+
+    struct MdBlock {
+        QString text;
+        int position = 0; // char offset of the block's first line in the source
+    };
+
+    // Blocks are groups of lines separated by blank lines, except that fenced
+    // code stays together; this is the unit of translation and of pairing in
+    // the bilingual view.
+    static QList<MdBlock> splitMarkdownBlocks(const QString &markdown)
+    {
+        QList<MdBlock> blocks;
+        QStringList current;
+        int currentStart = 0;
+        int lineStart = 0;
+        bool inFence = false;
+
+        const QStringList lines = markdown.split(QLatin1Char('\n'));
+        for (const QString &line : lines) {
+            const QString trimmed = line.trimmed();
+            if (!inFence && trimmed.isEmpty()) {
+                if (!current.isEmpty()) {
+                    blocks.append({current.join(QLatin1Char('\n')), currentStart});
+                    current.clear();
+                }
+            } else {
+                if (current.isEmpty()) {
+                    currentStart = lineStart;
+                }
+                current.append(line);
+                if (trimmed.startsWith(QLatin1String("```")) || trimmed.startsWith(QLatin1String("~~~"))) {
+                    inFence = !inFence;
+                }
+            }
+            lineStart += line.size() + 1;
+        }
+        if (!current.isEmpty()) {
+            blocks.append({current.join(QLatin1Char('\n')), currentStart});
+        }
+
+        return blocks;
+    }
+
+    // Code blocks and symbol-only blocks (horizontal rules etc.) pass through
+    // untranslated.
+    static bool blockIsTranslatable(const QString &block)
+    {
+        const QString trimmed = block.trimmed();
+        if (trimmed.startsWith(QLatin1String("```")) || trimmed.startsWith(QLatin1String("~~~"))) {
+            return false;
+        }
+        for (const QChar c : trimmed) {
+            if (c.isLetter()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    QString translationCacheKey(const QString &block) const
+    {
+        return ollamaModel_ + QLatin1Char('\x1f') + translationTarget_ + QLatin1Char('\x1f') + block;
+    }
+
+    // Sort key for translation order: blocks from the viewport top downward
+    // come first (in reading order), blocks above the viewport are weighted
+    // to run later.
+    static int translationPriority(int blockPosition, int viewportTopPosition)
+    {
+        return blockPosition >= viewportTopPosition
+            ? blockPosition - viewportTopPosition
+            : (viewportTopPosition - blockPosition) * 3;
+    }
+
+    QList<MdBlock> translatableBlocksByPriority() const
+    {
+        QList<MdBlock> ordered;
+        const QList<MdBlock> blocks = splitMarkdownBlocks(editor_->toPlainText());
+        for (const MdBlock &block : blocks) {
+            if (blockIsTranslatable(block.text)) {
+                ordered.append(block);
+            }
+        }
+
+        const int topPos = editor_->cursorForPosition(QPoint(0, 0)).position();
+        std::stable_sort(ordered.begin(), ordered.end(), [topPos](const MdBlock &a, const MdBlock &b) {
+            return translationPriority(a.position, topPos) < translationPriority(b.position, topPos);
+        });
+        return ordered;
+    }
+
+    void ensureTranslations()
+    {
+        translator_->configure(ollamaEndpoint_, ollamaModel_, translationTarget_);
+        translator_->setMaxInFlight(ollamaParallel_);
+
+        QStringList orderedKeys;
+        const QList<MdBlock> ordered = translatableBlocksByPriority();
+        for (const MdBlock &block : ordered) {
+            const QString key = translationCacheKey(block.text);
+            if (translationCache_.contains(key)) {
+                continue;
+            }
+            orderedKeys.append(key);
+            if (!pendingTranslations_.contains(key)) {
+                pendingTranslations_.insert(key);
+                translator_->requestTranslation(key, block.text);
+            }
+        }
+        translator_->prioritize(orderedKeys);
+
+        if (!pendingTranslations_.isEmpty()) {
+            statusBar()->showMessage(uiText("translating").arg(pendingTranslations_.size()));
+        }
+    }
+
+    // Called (debounced) when the editor viewport moves: waiting jobs are
+    // reordered so translation follows the reader.
+    void reprioritizeTranslations()
+    {
+        if (previewMode_ == "original" || pendingTranslations_.isEmpty()) {
+            return;
+        }
+
+        QStringList orderedKeys;
+        const QList<MdBlock> ordered = translatableBlocksByPriority();
+        for (const MdBlock &block : ordered) {
+            const QString key = translationCacheKey(block.text);
+            if (pendingTranslations_.contains(key)) {
+                orderedKeys.append(key);
+            }
+        }
+        translator_->prioritize(orderedKeys);
+    }
+
+    QString composePreviewHtml() const
+    {
+        const QString source = editor_->toPlainText();
+        if (previewMode_ == "original") {
+            return markdownToHtml(source);
+        }
+
+        const QList<MdBlock> blocks = splitMarkdownBlocks(source);
+
+        // Untranslated and failed blocks fall back to the original text so
+        // the document fills in progressively as results arrive.
+        if (previewMode_ == "translated") {
+            QStringList parts;
+            parts.reserve(blocks.size());
+            for (const MdBlock &block : blocks) {
+                const QString translated = blockIsTranslatable(block.text)
+                    ? translationCache_.value(translationCacheKey(block.text))
+                    : QString();
+                parts.append(translated.isEmpty() ? block.text : translated);
+            }
+            return markdownToHtml(parts.join(QLatin1String("\n\n")));
+        }
+
+        QString html;
+        for (const MdBlock &blockItem : blocks) {
+            const QString &block = blockItem.text;
+            html += markdownToHtml(block);
+            if (!blockIsTranslatable(block)) {
+                continue;
+            }
+            const QString key = translationCacheKey(block);
+            const QString translated = translationCache_.value(key);
+            if (!translated.isEmpty()) {
+                html += QLatin1String("<div class=\"mdv-tr\">") + markdownToHtml(translated)
+                    + QLatin1String("</div>");
+            } else {
+                // Cached-but-empty marks a block whose translation failed.
+                const QString marker = translationCache_.contains(key)
+                    ? uiText("trFailedBlock")
+                    : uiText("trPending");
+                html += QLatin1String("<div class=\"mdv-tr mdv-tr-pending\">")
+                    + marker.toHtmlEscaped() + QLatin1String("</div>");
+            }
+        }
+        return html;
+    }
+
+    void onBlockTranslated(const QString &key, const QString &text)
+    {
+        pendingTranslations_.remove(key);
+        translationCache_.insert(key, text);
+        refreshTranslatedPreview();
+    }
+
+    // A failed block is cached as an empty string: it renders as its
+    // original text (with a marker in bilingual view) and is not retried
+    // until the app restarts or the block is edited.
+    void onBlockFailed(const QString &key, const QString &error)
+    {
+        pendingTranslations_.remove(key);
+        translationCache_.insert(key, QString());
+        refreshTranslatedPreview();
+    }
+
+    void refreshTranslatedPreview()
+    {
+        if (previewMode_ == "original") {
+            return;
+        }
+
+        pendingPreviewHtml_ = composePreviewHtml();
+        if (previewLoaded_) {
+            pushPreviewContent();
+        }
+
+        if (pendingTranslations_.isEmpty()) {
+            statusBar()->showMessage(uiText("translationDone"), 3000);
+        } else {
+            statusBar()->showMessage(uiText("translating").arg(pendingTranslations_.size()));
+        }
+    }
+
+    void onTranslationFailed(const QString &error)
+    {
+        pendingTranslations_.clear();
+        if (previewMode_ == "original") {
+            return;
+        }
+
+        setPreviewMode("original");
+        QMessageBox::warning(this, uiText("translationFailedTitle"),
+            uiText("translationFailedText").arg(error));
+    }
+
+    void showTranslationSettings()
+    {
+        QDialog dialog(this);
+        dialog.setWindowTitle(uiText("trSettingsTitle"));
+
+        auto *layout = new QGridLayout(&dialog);
+        auto *endpointEdit = new QLineEdit(ollamaEndpoint_, &dialog);
+        auto *modelCombo = new QComboBox(&dialog);
+        modelCombo->setEditable(true);
+        modelCombo->setMinimumWidth(220);
+        modelCombo->setCurrentText(ollamaModel_);
+        auto *targetCombo = new QComboBox(&dialog);
+        targetCombo->addItem(QStringLiteral("日本語"), "Japanese");
+        targetCombo->addItem(QStringLiteral("English"), "English");
+        targetCombo->setCurrentIndex(translationTarget_ == "English" ? 1 : 0);
+        auto *parallelSpin = new QSpinBox(&dialog);
+        parallelSpin->setRange(1, 8);
+        parallelSpin->setValue(ollamaParallel_);
+
+        layout->addWidget(new QLabel(uiText("trEndpoint"), &dialog), 0, 0);
+        layout->addWidget(endpointEdit, 0, 1);
+        layout->addWidget(new QLabel(uiText("trModel"), &dialog), 1, 0);
+        layout->addWidget(modelCombo, 1, 1);
+        layout->addWidget(new QLabel(uiText("trTarget"), &dialog), 2, 0);
+        layout->addWidget(targetCombo, 2, 1);
+        layout->addWidget(new QLabel(uiText("trParallel"), &dialog), 3, 0);
+        layout->addWidget(parallelSpin, 3, 1);
+
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+        layout->addWidget(buttons, 4, 0, 1, 2);
+        connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+        // Offer the models installed on the server; the combo stays editable
+        // so a name can be typed when the server is unreachable.
+        auto *manager = new QNetworkAccessManager(&dialog);
+        const auto fetchModels = [manager, modelCombo, endpointEdit] {
+            const QString base = cleanedEndpoint(endpointEdit->text());
+            QNetworkReply *reply = manager->get(QNetworkRequest(QUrl(base + "/api/tags")));
+            QObject::connect(reply, &QNetworkReply::finished, modelCombo, [reply, modelCombo] {
+                reply->deleteLater();
+                if (reply->error() != QNetworkReply::NoError) {
+                    return;
+                }
+                const QJsonArray models = QJsonDocument::fromJson(reply->readAll())
+                    .object().value("models").toArray();
+                const QString current = modelCombo->currentText();
+                modelCombo->clear();
+                for (const QJsonValue &model : models) {
+                    modelCombo->addItem(model.toObject().value("name").toString());
+                }
+                if (!current.isEmpty()) {
+                    modelCombo->setCurrentText(current);
+                }
+            });
+        };
+        fetchModels();
+        connect(endpointEdit, &QLineEdit::editingFinished, &dialog, fetchModels);
+
+        if (dialog.exec() != QDialog::Accepted) {
+            return;
+        }
+
+        ollamaEndpoint_ = cleanedEndpoint(endpointEdit->text());
+        ollamaModel_ = modelCombo->currentText().trimmed();
+        translationTarget_ = targetCombo->currentData().toString();
+        ollamaParallel_ = parallelSpin->value();
+        saveViewSettings();
+
+        if (previewMode_ != "original") {
+            updatePreview();
+        }
+    }
+
+    static QString cleanedEndpoint(const QString &endpoint)
+    {
+        QString cleaned = endpoint.trimmed();
+        while (cleaned.endsWith(QLatin1Char('/'))) {
+            cleaned.chop(1);
+        }
+        return cleaned.isEmpty() ? defaultOllamaEndpoint() : cleaned;
     }
 
     void reloadPreviewTemplate()
@@ -1466,7 +2136,13 @@ private:
             "hr { border: none; border-top: 1px solid %6; }")
             .arg(bg, fg, previewFontFamilyCss(), QString::number(fontSize_), link,
                  border, editorFontFamilyCss(), codeBg, codeFg)
-            .arg(quoteFg, quoteBorder);
+            .arg(quoteFg, quoteBorder)
+            + QString(
+            ".mdv-tr { margin: 2px 0 18px; padding: 0 0 0 12px; border-left: 3px solid %1; }"
+            ".mdv-tr > :first-child { margin-top: 4px; }"
+            ".mdv-tr > :last-child { margin-bottom: 4px; }"
+            ".mdv-tr-pending { color: %2; font-style: italic; }")
+            .arg(link, quoteFg);
 
         return QStringLiteral(
             "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>")
@@ -1857,9 +2533,21 @@ private:
     static constexpr int maxFontSize_ = 28;
     QString currentTheme_ = "light";
     QString currentLanguage_ = "en";
+    OllamaTranslator *translator_ = nullptr;
+    QString previewMode_ = QStringLiteral("original");
+    QHash<QString, QString> translationCache_;
+    QSet<QString> pendingTranslations_;
+    QString ollamaEndpoint_ = defaultOllamaEndpoint();
+    QString ollamaModel_;
+    QString translationTarget_ = QStringLiteral("Japanese");
+    QToolButton *originalModeButton_ = nullptr;
+    QToolButton *bilingualModeButton_ = nullptr;
+    QToolButton *translatedModeButton_ = nullptr;
     QString editorFontFamily_;
     QString previewFontFamily_;
     int fontSize_ = defaultFontSize_;
+    int ollamaParallel_ = 2;
+    QTimer *translationPriorityTimer_ = nullptr;
     bool editorVisible_ = true;
     bool documentModified_ = false;
     bool syncingEditorFromPreview_ = false;
@@ -1893,6 +2581,12 @@ private:
     QActionGroup *languageActionGroup_ = nullptr;
     QAction *englishLanguageAction_ = nullptr;
     QAction *japaneseLanguageAction_ = nullptr;
+    QMenu *translationMenu_ = nullptr;
+    QActionGroup *translationModeGroup_ = nullptr;
+    QAction *originalModeAction_ = nullptr;
+    QAction *bilingualModeAction_ = nullptr;
+    QAction *translatedModeAction_ = nullptr;
+    QAction *translationSettingsAction_ = nullptr;
 };
 
 // macOS delivers files opened via `open -a`, Finder, or Dock drops as
