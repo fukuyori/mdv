@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 English | [日本語](CHANGELOG.ja.md)
 
+## [0.2.2] - 2026-07-08
+
+### Fixed
+
+- macOS: the preview pane was always blank and the app could crash shortly
+  after launch when an accessibility client (e.g. VoiceOver or Karabiner)
+  queried the window. The signed app bundle shipped a QtWebEngineProcess
+  helper that still referenced Homebrew Qt libraries by absolute path, so
+  the Chromium renderer process could never start. The macOS packaging
+  script now rewrites all library references inside the bundle to @rpath
+  and bundles the missing image-format dependencies (libjpeg, libwebp).
+
 ## [0.2.1] - 2026-07-07
 
 ### Added
