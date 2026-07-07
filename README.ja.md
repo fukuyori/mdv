@@ -182,7 +182,7 @@ Inno Setup で Windows インストーラーを作成:
 
 インストーラースクリプトは `CMakeLists.txt` からバージョンを読み取り、
 `dist\mdv-windows-x64` にある既存のペイロードを使います。その後
-`build-inno-installer\mdv.iss` を生成し、`dist\mdiv-<version>-windows-x64.exe` を
+`build-inno-installer\mdv.iss` を生成し、`dist\mdv-<version>-windows-x64.exe` を
 出力します。先に `.\scripts\build-windows.ps1` を実行してください。
 パッケージ作成時に明示的に再ビルドしたい場合だけ `-Build` を指定します。
 Inno Setup を実行せず `.iss` だけ生成する場合は `-GenerateOnly` を指定してください。

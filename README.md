@@ -185,7 +185,7 @@ Create a Windows installer with Inno Setup:
 
 The installer script reads the version from `CMakeLists.txt`, uses the
 existing payload under `dist\mdv-windows-x64`, generates
-`build-inno-installer\mdv.iss`, and writes `dist\mdiv-<version>-windows-x64.exe`.
+`build-inno-installer\mdv.iss`, and writes `dist\mdv-<version>-windows-x64.exe`.
 Run `.\scripts\build-windows.ps1` first, or pass `-Build` when you explicitly
 want packaging to rebuild the payload. Use `-GenerateOnly` to generate the
 `.iss` file without invoking Inno Setup.

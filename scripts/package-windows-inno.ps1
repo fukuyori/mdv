@@ -133,7 +133,7 @@ DefaultDirName={autopf}\mdv
 DefaultGroupName=mdv
 DisableProgramGroupPage=yes
 OutputDir=$outputLiteral
-OutputBaseFilename=mdiv-{#MyAppVersion}-windows-x64
+OutputBaseFilename=mdv-{#MyAppVersion}-windows-x64
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -175,4 +175,4 @@ if (-not $iscc) {
 
 Write-Host "Compiling installer with Inno Setup"
 & $iscc $issPath
-Write-Host "Installer output: $(Join-Path $outputPath "mdiv-$version-windows-x64.exe")"
+Write-Host "Installer output: $(Join-Path $outputPath "mdv-$version-windows-x64.exe")"
