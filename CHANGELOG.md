@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 English | [日本語](CHANGELOG.ja.md)
 
+## [0.3.0] - 2026-07-08
+
+### Added
+
+- Tabs: open and edit multiple Markdown documents at once, each with its
+  own editor, outline, and preview pane. New tabs can be created, closed
+  (with an unsaved-changes prompt), and switched between with Ctrl+Tab /
+  Ctrl+Shift+Tab.
+- Opening a file that is already open in another tab switches to that tab
+  instead of opening a duplicate.
+- Multiple files passed on the command line, or dropped onto the window,
+  now open as separate tabs (drag-and-drop file opening is new).
+- Translation continues in background tabs; switching a tab back to the
+  original view only cancels its own in-flight translations, not those of
+  other tabs still translating the same content.
+- Detect when the file behind a tab changes on disk (e.g. edited by another
+  program) and offer to reload it: immediately for the active tab, or when
+  a background tab is switched to. If the tab also has unsaved local edits
+  and the reload is declined, the usual save-on-close prompt now explains
+  that Save overwrites the external change and Discard keeps it.
+
 ## [0.2.2] - 2026-07-08
 
 ### Fixed

@@ -25,6 +25,12 @@ Viewer mode (`-v`), with the editor pane hidden:
 - Anchor links to headings (`#section`) work inside the preview;
   external links open in the system browser
 - Create, open, save, and save-as Markdown files
+- Tabs: edit multiple Markdown files at once, each with its own editor,
+  outline, and preview. Open several files at once from the command line or
+  by dropping them onto the window; opening a file that's already open
+  switches to its tab instead of duplicating it
+- Detects when a tab's file changes on disk (edited by another program) and
+  offers to reload it
 - Encoding safety: files are read as UTF-8 (UTF-16/32 with BOM are detected
   and preserved on save), and a warning is shown before opening or saving a
   file that did not decode cleanly
@@ -67,16 +73,18 @@ Other platforms:
 ./build/mdv
 ```
 
-Open a file directly by passing it as an argument:
+Open one or more files directly by passing them as arguments; each opens in
+its own tab:
 
 ```sh
-open -a mdv README.md                        # macOS (installed app)
-build/mdv.app/Contents/MacOS/mdv README.md   # macOS (direct binary)
-./build/mdv README.md                        # other platforms
+open -a mdv README.md CHANGELOG.md                        # macOS (installed app)
+build/mdv.app/Contents/MacOS/mdv README.md CHANGELOG.md   # macOS (direct binary)
+./build/mdv README.md CHANGELOG.md                        # other platforms
 ```
 
-On macOS the app also accepts files from Finder ("Open With") and from
-drops onto its Dock icon.
+Files can also be dropped onto the window to open them as tabs. On macOS the
+app additionally accepts files from Finder ("Open With") and from drops onto
+its Dock icon.
 
 Start in viewer mode, with the editor pane hidden:
 
