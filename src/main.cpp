@@ -6,6 +6,7 @@
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QCommandLineParser>
+#include <QDataStream>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDialog>
@@ -17,6 +18,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFileOpenEvent>
+#include <QEasingCurve>
 #include <QFileSystemWatcher>
 #include <QFont>
 #include <QFontDialog>
@@ -29,16 +31,22 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLocalServer>
+#include <QLocalSocket>
 #include <QLocale>
 #include <QMainWindow>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QMouseEvent>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QPixmap>
 #include <QPlainTextEdit>
+#include <QPointer>
+#include <QPropertyAnimation>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSaveFile>
@@ -74,7 +82,7 @@
 #include "md4c-html.h"
 
 #ifndef MDV_VERSION
-#define MDV_VERSION "0.3.0"
+#define MDV_VERSION "0.3.1"
 #endif
 
 // ---------------------------------------------------------------------------
@@ -578,6 +586,177 @@ private:
 
 class MainWindow;
 
+// Lets a tab be dragged out of the tab bar to detach it into a new window,
+// mirroring browser tab tear-off. QTabBar's own movable-tabs behavior (drag
+// to reorder within the bar) is left alone; only a drag that ends clearly
+// outside the bar's bounds is treated as a detach request. The actual
+// detach is decided/performed by whoever wires up onTabDetachRequested
+// (MainWindow), not by this class.
+class DetachableTabBar : public QTabBar {
+    Q_OBJECT
+
+public:
+    using QTabBar::QTabBar;
+
+    std::function<QWidget *(int)> widgetAtIndex;
+    std::function<void(QWidget *, const QPoint &)> onTabDetachRequested;
+
+protected:
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton) {
+            // Whether this is actually allowed to detach (e.g. a lone tab
+            // dragged onto empty space is a no-op) is decided by whoever
+            // handles onTabDetachRequested once the drop target is known.
+            draggedIndex_ = tabAt(event->pos());
+            draggedWidget_ = (draggedIndex_ >= 0 && widgetAtIndex) ? widgetAtIndex(draggedIndex_) : nullptr;
+            draggedOutside_ = false;
+        }
+        QTabBar::mousePressEvent(event);
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        QTabBar::mouseMoveEvent(event);
+        if ((event->buttons() & Qt::LeftButton) && draggedWidget_ != nullptr) {
+            // Generous margin so ordinary in-bar reordering, including the
+            // slight vertical wobble of a real drag, never triggers a detach.
+            const QRect bounds = rect().adjusted(0, -16, 0, 48);
+            const bool outside = !bounds.contains(event->pos());
+            const QPoint globalPos = event->globalPosition().toPoint();
+
+            if (outside && !draggedOutside_) {
+                // Transition frame only: showDragPreview positions and
+                // animates the preview itself. Calling moveDragPreview here
+                // too would fight that animation with a direct jump.
+                showDragPreview(globalPos);
+            } else if (!outside && draggedOutside_) {
+                hideDragPreview();
+            } else if (outside) {
+                moveDragPreview(globalPos);
+            }
+            draggedOutside_ = outside;
+        }
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        QWidget *widget = draggedWidget_;
+        const bool shouldDetach = draggedOutside_ && widget != nullptr;
+        const QPoint globalPos = event->globalPosition().toPoint();
+        draggedWidget_ = nullptr;
+        draggedOutside_ = false;
+        hideDragPreview();
+
+        // Let QTabBar finish its own drag/reorder handling first so removing
+        // the tab afterward (if we detach) doesn't fight its internal state.
+        QTabBar::mouseReleaseEvent(event);
+
+        if (shouldDetach && onTabDetachRequested) {
+            onTabDetachRequested(widget, globalPos);
+        }
+    }
+
+private:
+    // A translucent "ghost" of the tab that follows the cursor once the
+    // drag has left the bar, popping in with a grow animation to signal
+    // that releasing here will tear the tab off (into a new window, or
+    // into whatever mdv window it's dropped on).
+    //
+    // The window's own opacity is set to its final value immediately -
+    // never left at 0 - so the preview is guaranteed to be visible even if
+    // the animation below can't run for some reason; the animation is a
+    // bonus flourish on top of that, not a requirement for visibility.
+    void showDragPreview(const QPoint &globalPos)
+    {
+        if (draggedIndex_ < 0) {
+            return;
+        }
+
+        const QPixmap pixmap = grab(tabRect(draggedIndex_));
+        if (pixmap.isNull()) {
+            return;
+        }
+        dragPreviewSize_ = pixmap.size();
+
+        dragPreview_ = new QWidget(nullptr, Qt::FramelessWindowHint | Qt::Tool | Qt::WindowStaysOnTopHint);
+        dragPreview_->setAttribute(Qt::WA_ShowWithoutActivating);
+        dragPreview_->setAttribute(Qt::WA_TransparentForMouseEvents);
+        dragPreview_->setWindowOpacity(0.9);
+
+        auto *layout = new QVBoxLayout(dragPreview_);
+        layout->setContentsMargins(0, 0, 0, 0);
+        auto *label = new QLabel(dragPreview_);
+        label->setPixmap(pixmap);
+        label->setScaledContents(true);
+        layout->addWidget(label);
+
+        const QRect endRect = previewRectFor(globalPos, dragPreviewSize_);
+        const QSize startSize = dragPreviewSize_ * 0.55;
+        const QRect startRect = previewRectFor(globalPos, startSize);
+
+        dragPreview_->setGeometry(startRect);
+        dragPreview_->show();
+        dragPreview_->raise();
+
+        auto *grow = new QPropertyAnimation(dragPreview_, "geometry", dragPreview_);
+        grow->setDuration(160);
+        grow->setEasingCurve(QEasingCurve::OutBack);
+        grow->setStartValue(startRect);
+        grow->setEndValue(endRect);
+        grow->start(QAbstractAnimation::DeleteWhenStopped);
+    }
+
+    static QRect previewRectFor(const QPoint &globalPos, const QSize &size)
+    {
+        return QRect(globalPos - QPoint(size.width() / 2, size.height() / 2), size);
+    }
+
+    void moveDragPreview(const QPoint &globalPos)
+    {
+        if (dragPreview_ == nullptr) {
+            return;
+        }
+        dragPreview_->setGeometry(previewRectFor(globalPos, dragPreviewSize_));
+    }
+
+    void hideDragPreview()
+    {
+        if (dragPreview_ != nullptr) {
+            // Hide synchronously (not just deleteLater) so a hit test done
+            // right after release, e.g. "what window is under the cursor",
+            // doesn't see the ghost preview itself.
+            dragPreview_->hide();
+            dragPreview_->deleteLater();
+            dragPreview_ = nullptr;
+        }
+    }
+
+    QPointer<QWidget> draggedWidget_;
+    int draggedIndex_ = -1;
+    bool draggedOutside_ = false;
+    QPointer<QWidget> dragPreview_;
+    QSize dragPreviewSize_;
+};
+
+// QTabWidget::setTabBar() is protected, so a subclass is needed to install
+// the DetachableTabBar above.
+class MdvTabWidget : public QTabWidget {
+    Q_OBJECT
+
+public:
+    explicit MdvTabWidget(QWidget *parent = nullptr)
+        : QTabWidget(parent)
+    {
+        setTabBar(new DetachableTabBar(this));
+    }
+
+    DetachableTabBar *detachableTabBar() const
+    {
+        return qobject_cast<DetachableTabBar *>(tabBar());
+    }
+};
+
 // One open Markdown document: its own editor, outline, and live preview
 // (each with its own QWebChannel/PreviewBridge pair), plus the translation
 // state for that document's content. Owned by MainWindow's QTabWidget, one
@@ -596,6 +775,11 @@ public:
     QString filePath() const { return currentFile_; }
     bool isModified() const { return documentModified_; }
     QString previewMode() const { return previewMode_; }
+
+    // True for a never-touched tab (the startup welcome tab, or a fresh
+    // "New" tab): no backing file and no edits, so it's safe to replace
+    // outright instead of leaving it around as an extra tab.
+    bool isPristineUntitled() const { return currentFile_.isEmpty() && !documentModified_; }
 
     void setUntitledLabel(const QString &label) { untitledLabel_ = label; }
 
@@ -628,6 +812,7 @@ public:
     bool writeFile(const QString &path);
     bool confirmDiscardChanges();
     void checkForExternalChanges();
+    void reparentToWindow(MainWindow *newWindow);
 
     void updateOutline();
     void updatePreview();
@@ -811,8 +996,34 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 
 public:
+    // Every open window, in creation order, so a tab dropped near the edge
+    // of another mdv window can be merged into it instead of always
+    // spawning a brand-new window.
+    static QList<MainWindow *> &allWindows()
+    {
+        static QList<MainWindow *> windows;
+        return windows;
+    }
+
+    // QApplication::widgetAt() only resolves actual Qt widgets, and the
+    // preview pane's QWebEngineView is backed by its own native (Chromium)
+    // surface on most platforms - a drop over a preview pane would be
+    // missed entirely. Testing each window's own screen geometry directly
+    // works regardless of what's rendered inside it.
+    static MainWindow *windowAt(const QPoint &globalPos)
+    {
+        for (MainWindow *candidate : allWindows()) {
+            if (candidate->isVisible() && candidate->frameGeometry().contains(globalPos)) {
+                return candidate;
+            }
+        }
+        return nullptr;
+    }
+
     explicit MainWindow(bool startWithEditorHidden = false)
     {
+        allWindows().append(this);
+
         loadViewSettings();
         if (startWithEditorHidden) {
             editorVisible_ = false;
@@ -850,13 +1061,27 @@ public:
         createActions();
         createMenus();
 
-        tabWidget_ = new QTabWidget(this);
+        tabWidget_ = new MdvTabWidget(this);
         tabWidget_->setTabsClosable(true);
         tabWidget_->setMovable(true);
         tabWidget_->setDocumentMode(true);
         connect(tabWidget_, &QTabWidget::currentChanged, this, [this](int index) { onCurrentTabChanged(index); });
         connect(tabWidget_, &QTabWidget::tabCloseRequested, this, [this](int index) { closeTab(index); });
         setCentralWidget(tabWidget_);
+
+        tabWidget_->tabBar()->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(tabWidget_->tabBar(), &QTabBar::customContextMenuRequested, this, [this](const QPoint &pos) {
+            showTabContextMenu(pos);
+        });
+
+        tabWidget_->detachableTabBar()->widgetAtIndex = [this](int index) -> QWidget * {
+            return tabWidget_->widget(index);
+        };
+        tabWidget_->detachableTabBar()->onTabDetachRequested = [this](QWidget *widget, const QPoint &globalPos) {
+            if (auto *tab = qobject_cast<DocumentTab *>(widget)) {
+                handleTabDropped(tab, globalPos);
+            }
+        };
 
         setAcceptDrops(true);
 
@@ -877,9 +1102,6 @@ public:
         loadRecentFiles();
         updateRecentFilesMenu();
 
-        DocumentTab *initialTab = newBlankTab();
-        initialTab->setInitialContent(sampleMarkdown());
-
         applyViewSettings();
         applyPaneVisibility(false);
         updateWindowTitle();
@@ -889,6 +1111,22 @@ public:
 
         resize(1100, 720);
         showReadyStatus();
+    }
+
+    // Called once at startup, after any files requested on the command line
+    // or handed over by the OS have been opened as tabs: only shows the
+    // blank sample document when nothing else was opened.
+    void ensureAtLeastOneTab()
+    {
+        if (tabWidget_->count() == 0) {
+            DocumentTab *tab = newBlankTab();
+            tab->setInitialContent(sampleMarkdown());
+        }
+    }
+
+    ~MainWindow() override
+    {
+        allWindows().removeAll(this);
     }
 
     void openFileFromCommandLine(const QString &path)
@@ -925,6 +1163,7 @@ public:
         if (key == "save") return ja ? "保存(&S)" : "&Save";
         if (key == "saveAs") return ja ? "名前を付けて保存(&A)..." : "Save &As...";
         if (key == "closeTab") return ja ? "タブを閉じる(&W)" : "&Close Tab";
+        if (key == "openInNewWindow") return ja ? "新しいウインドウで開く" : "Open in New Window";
         if (key == "recent") return ja ? "最近開いたファイル(&R)" : "Open &Recent";
         if (key == "clearRecent") return ja ? "履歴を消去(&C)" : "&Clear Recent Files";
         if (key == "exit") return ja ? "終了(&X)" : "E&xit";
@@ -1699,6 +1938,18 @@ private:
             return;
         }
 
+        // Replace a still-blank starter/new tab instead of leaving it
+        // sitting next to the file being opened.
+        if (tabWidget_->count() == 1) {
+            auto *only = qobject_cast<DocumentTab *>(tabWidget_->widget(0));
+            if (only != nullptr && only->isPristineUntitled()) {
+                if (only->loadFile(path)) {
+                    refreshTabLabel(only);
+                }
+                return;
+            }
+        }
+
         auto *tab = new DocumentTab(this);
         tabWidget_->addTab(tab, QString());
         tabWidget_->setCurrentWidget(tab);
@@ -1725,6 +1976,126 @@ private:
         }
         tabWidget_->removeTab(index);
         tab->deleteLater();
+
+        if (tabWidget_->count() == 0) {
+            DocumentTab *fresh = newBlankTab();
+            fresh->setInitialContent(QString());
+        }
+    }
+
+    void showTabContextMenu(const QPoint &pos)
+    {
+        const int index = tabWidget_->tabBar()->tabAt(pos);
+        if (index < 0) {
+            return;
+        }
+        auto *tab = qobject_cast<DocumentTab *>(tabWidget_->widget(index));
+        if (tab == nullptr) {
+            return;
+        }
+
+        QMenu menu(this);
+        QAction *closeAction = menu.addAction(uiText("closeTab"));
+        QAction *openInNewWindowAction = nullptr;
+        if (tabWidget_->count() > 1) {
+            openInNewWindowAction = menu.addAction(uiText("openInNewWindow"));
+        }
+
+        QAction *chosen = menu.exec(tabWidget_->tabBar()->mapToGlobal(pos));
+        if (chosen == nullptr) {
+            return;
+        }
+        if (chosen == closeAction) {
+            closeTab(index);
+        } else if (chosen == openInNewWindowAction) {
+            moveTabToNewWindow(tab, QPoint());
+        }
+    }
+
+    // Adds a tab that already belongs to another window (its DocumentTab
+    // must have been reparented to this window first via reparentToWindow).
+    void adoptTab(DocumentTab *tab)
+    {
+        tabWidget_->addTab(tab, tab->tabLabel());
+        refreshTabLabel(tab);
+        tabWidget_->setCurrentWidget(tab);
+    }
+
+    // Decides what a tab dropped at globalPos should do: merge into
+    // whichever other mdv window (if any) is under the cursor there, or
+    // fall back to spawning a brand-new window - but never just to
+    // relocate a lone tab, since dragging a window's only tab onto empty
+    // space wouldn't change anything.
+    void handleTabDropped(DocumentTab *tab, const QPoint &globalPos)
+    {
+        // Dropped back inside this same window (just not on the bar itself,
+        // e.g. over the editor/preview) - treat it as a cancelled drag
+        // rather than spawning a pointless new window.
+        if (frameGeometry().contains(globalPos)) {
+            return;
+        }
+
+        if (MainWindow *target = windowAt(globalPos)) {
+            moveTabToExistingWindow(tab, target);
+            return;
+        }
+
+        if (tabWidget_->count() > 1) {
+            moveTabToNewWindow(tab, globalPos);
+        }
+    }
+
+    // Moves a tab into another already-open window. If this window has no
+    // tabs left afterward, it closes outright instead of lingering as an
+    // empty duplicate.
+    void moveTabToExistingWindow(DocumentTab *tab, MainWindow *target)
+    {
+        const int index = tabWidget_->indexOf(tab);
+        if (index < 0) {
+            return;
+        }
+
+        tab->reparentToWindow(target);
+        tabWidget_->removeTab(index);
+        target->adoptTab(tab);
+
+        target->raise();
+        target->activateWindow();
+
+        if (tabWidget_->count() == 0) {
+            close();
+        }
+    }
+
+    // Moves a tab out of this window into a brand-new one, used by both the
+    // tab context menu and the drag-out-of-the-bar gesture. globalPos, if
+    // non-null, positions the new window near where the tab was dropped.
+    void moveTabToNewWindow(DocumentTab *tab, const QPoint &globalPos)
+    {
+        const int index = tabWidget_->indexOf(tab);
+        if (index < 0) {
+            return;
+        }
+
+        auto *newWindow = new MainWindow();
+        newWindow->setAttribute(Qt::WA_DeleteOnClose);
+
+        // Reparent while the tab is still one of ours, so any in-flight
+        // translations still tied to our translator are cancelled/handed
+        // off correctly before we lose track of the tab.
+        tab->reparentToWindow(newWindow);
+        tabWidget_->removeTab(index);
+        newWindow->adoptTab(tab);
+
+        if (globalPos.isNull()) {
+            newWindow->move(pos() + QPoint(48, 48));
+        } else {
+            newWindow->move(globalPos - QPoint(60, 20));
+        }
+        newWindow->resize(size());
+        newWindow->show();
+        newWindow->raise();
+        newWindow->activateWindow();
 
         if (tabWidget_->count() == 0) {
             DocumentTab *fresh = newBlankTab();
@@ -2248,7 +2619,7 @@ private:
         setWindowTitle(uiText("windowTitle").arg(name, modified ? "*" : ""));
     }
 
-    QTabWidget *tabWidget_ = nullptr;
+    MdvTabWidget *tabWidget_ = nullptr;
     QLabel *versionLabel_ = nullptr;
     QMenu *fileMenu_ = nullptr;
     QMenu *editMenu_ = nullptr;
@@ -2838,6 +3209,30 @@ void DocumentTab::checkForExternalChanges()
     }
 }
 
+// Moves this tab to a different MainWindow. Must be called while the tab is
+// still attached to its old window's tab bar, so any in-flight translation
+// keys can be correctly reasoned about relative to the old window's other
+// tabs before we stop being one of them.
+void DocumentTab::reparentToWindow(MainWindow *newWindow)
+{
+    if (newWindow == nullptr || newWindow == window_) {
+        return;
+    }
+
+    if (!pendingTranslations_.isEmpty()) {
+        cancelOwnTranslations();
+    }
+
+    window_ = newWindow;
+
+    applyFontsAndTheme();
+    applyPaneVisibility();
+    updateUiTexts();
+    if (previewMode_ != "original") {
+        updatePreview();
+    }
+}
+
 void DocumentTab::pasteFromClipboard()
 {
     const QMimeData *mimeData = QApplication::clipboard()->mimeData();
@@ -3183,6 +3578,79 @@ void DocumentTab::syncEditorToPreview(int headingCount, int segment, double t, d
     scrollEditorToPosition(qBound(0, target, sourceEnd));
 }
 
+// Tabs can only be dragged between windows that live in the same process
+// (moving a QWidget across a process boundary isn't possible), but the
+// natural way to get "another mdv window" is just running mdv again, which
+// would otherwise start a second, unrelated process. This makes a second
+// launch hand its file arguments to the already-running instance, which
+// opens them in a new window of its own, instead of starting a process of
+// its own.
+class SingleInstanceCoordinator : public QObject {
+    Q_OBJECT
+
+public:
+    std::function<void(const QStringList &, bool)> onFilesReceived;
+
+    explicit SingleInstanceCoordinator(QObject *parent = nullptr)
+        : QObject(parent)
+    {
+        // Clears out a stale socket/pipe left behind by a crashed instance;
+        // harmless (and a no-op) when nothing is actually listening.
+        QLocalServer::removeServer(serverName());
+        server_ = new QLocalServer(this);
+        server_->listen(serverName());
+        connect(server_, &QLocalServer::newConnection, this, &SingleInstanceCoordinator::acceptConnection);
+    }
+
+    // Tries to hand off `paths` (and the viewer-mode flag) to an
+    // already-running instance. Returns true if one accepted the
+    // connection, meaning the caller should exit without opening its own
+    // window; false means this process should become the running instance.
+    static bool handOffToRunningInstance(const QStringList &paths, bool viewerMode)
+    {
+        QLocalSocket socket;
+        socket.connectToServer(serverName());
+        if (!socket.waitForConnected(200)) {
+            return false;
+        }
+
+        QByteArray payload;
+        QDataStream stream(&payload, QIODevice::WriteOnly);
+        stream << paths << viewerMode;
+
+        socket.write(payload);
+        socket.waitForBytesWritten(500);
+        socket.disconnectFromServer();
+        return true;
+    }
+
+private:
+    static QString serverName()
+    {
+        return QStringLiteral("mdv-single-instance-%1").arg(QString::fromLocal8Bit(qgetenv("USERNAME")));
+    }
+
+    void acceptConnection()
+    {
+        while (QLocalSocket *socket = server_->nextPendingConnection()) {
+            connect(socket, &QLocalSocket::disconnected, this, [this, socket] {
+                QByteArray payload = socket->readAll();
+                QDataStream stream(&payload, QIODevice::ReadOnly);
+                QStringList paths;
+                bool viewerMode = false;
+                stream >> paths >> viewerMode;
+
+                if (onFilesReceived) {
+                    onFilesReceived(paths, viewerMode);
+                }
+                socket->deleteLater();
+            });
+        }
+    }
+
+    QLocalServer *server_ = nullptr;
+};
+
 // macOS delivers files opened via `open -a`, Finder, or Dock drops as
 // QFileOpenEvent instead of command-line arguments.
 class MdvApplication : public QApplication {
@@ -3238,12 +3706,37 @@ int main(int argc, char *argv[])
         return 0;
     }
 
+    QStringList filesToOpen = parser.positionalArguments();
+
+    // If mdv is already running, open these files (if any) in a new window
+    // of that instance and quit: tabs can only be dragged between windows
+    // in the same process, so a second OS process would be a dead end for
+    // that even though it looks like "another mdv window" to the user.
+    if (SingleInstanceCoordinator::handOffToRunningInstance(filesToOpen, parser.isSet(viewerModeOption))) {
+        return 0;
+    }
+
+    auto *singleInstance = new SingleInstanceCoordinator(&app);
+
     MainWindow window(parser.isSet(viewerModeOption));
     app.fileOpenHandler = [&window](const QString &path) {
         window.openFileFromOsRequest(path);
     };
 
-    QStringList filesToOpen = parser.positionalArguments();
+    singleInstance->onFilesReceived = [&window](const QStringList &paths, bool viewerMode) {
+        auto *newWindow = new MainWindow(viewerMode);
+        newWindow->setAttribute(Qt::WA_DeleteOnClose);
+        for (const QString &path : paths) {
+            newWindow->openFileFromCommandLine(path);
+        }
+        newWindow->ensureAtLeastOneTab();
+        newWindow->move(window.pos() + QPoint(48, 48));
+        newWindow->resize(window.size());
+        newWindow->show();
+        newWindow->raise();
+        newWindow->activateWindow();
+    };
+
     if (!app.pendingFileOpen.isEmpty()) {
         if (!filesToOpen.contains(app.pendingFileOpen)) {
             filesToOpen.prepend(app.pendingFileOpen);
@@ -3253,6 +3746,7 @@ int main(int argc, char *argv[])
     for (const QString &path : filesToOpen) {
         window.openFileFromCommandLine(path);
     }
+    window.ensureAtLeastOneTab();
 
     window.show();
 

@@ -29,6 +29,9 @@ Viewer mode (`-v`), with the editor pane hidden:
   outline, and preview. Open several files at once from the command line or
   by dropping them onto the window; opening a file that's already open
   switches to its tab instead of duplicating it
+- Multiple windows: right-click a tab for "Open in New Window", or drag a
+  tab out of the tab bar to detach it into a new window. Dragging a tab
+  onto another mdv window moves it there instead
 - Detects when a tab's file changes on disk (edited by another program) and
   offers to reload it
 - Encoding safety: files are read as UTF-8 (UTF-16/32 with BOM are detected

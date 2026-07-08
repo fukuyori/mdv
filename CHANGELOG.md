@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 English | [日本語](CHANGELOG.ja.md)
 
+## [0.3.1] - 2026-07-08
+
+### Added
+
+- Multiple windows: right-click a tab and choose "Open in New Window" to
+  move it into a new window of its own (shown only when the window has more
+  than one tab).
+- Drag a tab out of the tab bar to detach it into a new window, with a
+  translucent preview of the tab following the cursor while dragging.
+- Dragging a tab and dropping it onto another mdv window moves the tab there
+  instead of creating a new window. If the source window's last tab is
+  moved this way, that window closes, leaving just the one window.
+
 ## [0.3.0] - 2026-07-08
 
 ### Added
