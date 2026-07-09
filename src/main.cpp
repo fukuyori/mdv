@@ -2777,6 +2777,7 @@ DocumentTab::DocumentTab(MainWindow *window, QWidget *parent)
     bilingualModeButton_ = new QToolButton(previewBar);
     translatedModeButton_ = new QToolButton(previewBar);
     for (QToolButton *button : {originalModeButton_, bilingualModeButton_, translatedModeButton_}) {
+        button->setToolButtonStyle(Qt::ToolButtonTextOnly);
         button->setCheckable(true);
         button->setAutoExclusive(true);
         button->setFocusPolicy(Qt::NoFocus);
@@ -2833,7 +2834,7 @@ DocumentTab::DocumentTab(MainWindow *window, QWidget *parent)
         jumpToHeading(item);
     });
 
-    editor_->setPlaceholderText(window_->uiText("placeholder"));
+    updateUiTexts();
     applyFontsAndTheme();
     applyPaneVisibility();
 }
