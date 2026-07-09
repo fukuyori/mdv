@@ -51,7 +51,8 @@ Viewer mode (`-v`), with the editor pane hidden:
   and translation-only views with buttons above the preview
   (see [Translation](#translation))
 - Switch the UI language between English and Japanese
-- Show or hide the editor pane
+- Show or hide the editor pane with a slim toggle beside the preview, or from
+  the View menu
 
 ## Build
 
@@ -95,6 +96,9 @@ Start in viewer mode, with the editor pane hidden:
 open build/mdv.app --args -v   # macOS
 ./build/mdv -v                 # other platforms
 ```
+
+In viewer mode, use the slim toggle on the left edge of the preview to show
+the editor pane again.
 
 The Open and Save As dialogs start in the current working directory (home
 when the app is launched from Finder) and then follow the directory you

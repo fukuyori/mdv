@@ -54,6 +54,7 @@
 #include <QSet>
 #include <QSettings>
 #include <QShortcut>
+#include <QSizePolicy>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStatusBar>
@@ -82,7 +83,7 @@
 #include "md4c-html.h"
 
 #ifndef MDV_VERSION
-#define MDV_VERSION "0.3.1"
+#define MDV_VERSION "0.3.2"
 #endif
 
 // ---------------------------------------------------------------------------
@@ -990,6 +991,7 @@ private:
     QToolButton *originalModeButton_ = nullptr;
     QToolButton *bilingualModeButton_ = nullptr;
     QToolButton *translatedModeButton_ = nullptr;
+    QToolButton *toggleEditorButton_ = nullptr;
 };
 
 class MainWindow : public QMainWindow {
@@ -1187,6 +1189,8 @@ public:
         if (key == "resetFonts") return ja ? "フォントをリセット(&R)" : "&Reset Fonts";
         if (key == "fontStatus") return ja ? "フォント: エディタ %1 / プレビュー %2" : "Fonts: editor %1 / preview %2";
         if (key == "showEditor") return ja ? "編集ペインを表示(&E)" : "Show &Editor Pane";
+        if (key == "showEditorPane") return ja ? "編集ペインを表示" : "Show editor pane";
+        if (key == "hideEditorPane") return ja ? "編集ペインを隠す" : "Hide editor pane";
         if (key == "editorShown") return ja ? "編集ペインを表示しました" : "Editor pane shown";
         if (key == "editorHidden") return ja ? "編集ペインを非表示にしました" : "Editor pane hidden";
         if (key == "ready") return ja ? "準備完了" : "Ready";
@@ -1279,6 +1283,17 @@ public:
     QString currentTheme() const { return currentTheme_; }
     int fontSize() const { return fontSize_; }
     bool editorVisible() const { return editorVisible_; }
+    void setEditorPaneVisible(bool visible, bool announce)
+    {
+        if (editorVisible_ == visible) {
+            applyPaneVisibility(false);
+            return;
+        }
+
+        editorVisible_ = visible;
+        applyPaneVisibility(announce);
+        saveViewSettings();
+    }
     QString ollamaEndpoint() const { return ollamaEndpoint_; }
     QString ollamaModel() const { return ollamaModel_; }
     QString translationTarget() const { return translationTarget_; }
@@ -1701,9 +1716,7 @@ private:
         toggleEditorAction_ = new QAction(this);
         toggleEditorAction_->setCheckable(true);
         connect(toggleEditorAction_, &QAction::triggered, this, [this](bool checked) {
-            editorVisible_ = checked;
-            applyPaneVisibility(true);
-            saveViewSettings();
+            setEditorPaneVisible(checked, true);
         });
 
         translationModeGroup_ = new QActionGroup(this);
@@ -2565,6 +2578,7 @@ private:
                 "QMainWindow, QMenuBar, QMenu, QStatusBar { background: #202124; color: #e8eaed; }"
                 "QStatusBar QLabel { color: #e8eaed; }"
                 "QWidget#previewBar { background: #202124; }"
+                "QToolButton#editorPaneToggle { min-width: 22px; max-width: 22px; padding: 0; }"
                 "QPlainTextEdit, QTreeWidget { background: #1f1f1f; color: #e8eaed; border: 1px solid #3c4043; selection-background-color: #34517a; }"
                 "QLineEdit, QCheckBox, QPushButton, QComboBox { background: #2b2c2f; color: #e8eaed; border: 1px solid #5f6368; padding: 3px; }"
                 "QToolButton { background: #2b2c2f; color: #e8eaed; border: 1px solid #5f6368; padding: 3px 10px; }"
@@ -2578,6 +2592,7 @@ private:
                 "QMainWindow, QMenuBar, QMenu, QStatusBar { background: #f3ead7; color: #43372b; }"
                 "QStatusBar QLabel { color: #43372b; }"
                 "QWidget#previewBar { background: #f3ead7; }"
+                "QToolButton#editorPaneToggle { min-width: 22px; max-width: 22px; padding: 0; }"
                 "QPlainTextEdit, QTreeWidget { background: #fbf4e6; color: #43372b; border: 1px solid #d4c2a3; selection-background-color: #d8c49a; }"
                 "QLineEdit, QCheckBox, QPushButton, QComboBox { background: #fbf4e6; color: #43372b; border: 1px solid #d4c2a3; padding: 3px; }"
                 "QToolButton { background: #fbf4e6; color: #43372b; border: 1px solid #d4c2a3; padding: 3px 10px; }"
@@ -2591,6 +2606,7 @@ private:
                 "QMainWindow, QMenuBar, QMenu, QStatusBar { background: #f6f7f9; color: #202124; }"
                 "QStatusBar QLabel { color: #202124; }"
                 "QWidget#previewBar { background: #f6f7f9; }"
+                "QToolButton#editorPaneToggle { min-width: 22px; max-width: 22px; padding: 0; }"
                 "QPlainTextEdit, QTreeWidget { background: #ffffff; color: #202124; border: 1px solid #d0d4dc; selection-background-color: #cfe3ff; selection-color: #111827; }"
                 "QLineEdit, QCheckBox, QPushButton, QComboBox { background: #ffffff; color: #202124; border: 1px solid #d0d4dc; padding: 3px; }"
                 "QToolButton { background: #ffffff; color: #202124; border: 1px solid #d0d4dc; padding: 3px 10px; }"
@@ -2763,11 +2779,24 @@ DocumentTab::DocumentTab(MainWindow *window, QWidget *parent)
     });
 
     auto *previewContainer = new QWidget(this);
-    auto *previewLayout = new QVBoxLayout(previewContainer);
+    auto *previewContainerLayout = new QHBoxLayout(previewContainer);
+    previewContainerLayout->setContentsMargins(0, 0, 0, 0);
+    previewContainerLayout->setSpacing(0);
+
+    toggleEditorButton_ = new QToolButton(previewContainer);
+    toggleEditorButton_->setObjectName(QStringLiteral("editorPaneToggle"));
+    toggleEditorButton_->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    toggleEditorButton_->setCheckable(true);
+    toggleEditorButton_->setFocusPolicy(Qt::NoFocus);
+    toggleEditorButton_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+    previewContainerLayout->addWidget(toggleEditorButton_);
+
+    auto *previewContent = new QWidget(previewContainer);
+    auto *previewLayout = new QVBoxLayout(previewContent);
     previewLayout->setContentsMargins(0, 0, 0, 0);
     previewLayout->setSpacing(0);
 
-    auto *previewBar = new QWidget(previewContainer);
+    auto *previewBar = new QWidget(previewContent);
     previewBar->setObjectName(QStringLiteral("previewBar"));
     auto *previewBarLayout = new QHBoxLayout(previewBar);
     previewBarLayout->setContentsMargins(6, 4, 6, 4);
@@ -2789,9 +2818,13 @@ DocumentTab::DocumentTab(MainWindow *window, QWidget *parent)
     connect(originalModeButton_, &QToolButton::clicked, this, [this] { setPreviewMode("original"); });
     connect(bilingualModeButton_, &QToolButton::clicked, this, [this] { setPreviewMode("bilingual"); });
     connect(translatedModeButton_, &QToolButton::clicked, this, [this] { setPreviewMode("translated"); });
+    connect(toggleEditorButton_, &QToolButton::clicked, this, [this](bool checked) {
+        window_->setEditorPaneVisible(checked, true);
+    });
 
     previewLayout->addWidget(previewBar);
     previewLayout->addWidget(preview_, 1);
+    previewContainerLayout->addWidget(previewContent, 1);
 
     splitter_ = new QSplitter(this);
     splitter_->addWidget(outline_);
@@ -2974,6 +3007,9 @@ void DocumentTab::applyFontsAndTheme()
 
 void DocumentTab::applyPaneVisibility()
 {
+    toggleEditorButton_->setChecked(window_->editorVisible());
+    toggleEditorButton_->setText(window_->editorVisible() ? QStringLiteral("<") : QStringLiteral(">"));
+    toggleEditorButton_->setToolTip(window_->uiText(window_->editorVisible() ? "hideEditorPane" : "showEditorPane"));
     editor_->setVisible(window_->editorVisible());
 
     if (window_->editorVisible()) {
@@ -2995,6 +3031,7 @@ void DocumentTab::updateUiTexts()
     originalModeButton_->setText(window_->uiText("trOriginal"));
     bilingualModeButton_->setText(window_->uiText("trBilingual"));
     translatedModeButton_->setText(window_->uiText("trTranslated"));
+    toggleEditorButton_->setToolTip(window_->uiText(window_->editorVisible() ? "hideEditorPane" : "showEditorPane"));
 }
 
 bool DocumentTab::loadFile(const QString &path)

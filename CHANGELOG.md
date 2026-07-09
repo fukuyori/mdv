@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 English | [日本語](CHANGELOG.ja.md)
 
+## [0.3.2] - 2026-07-09
+
+### Added
+
+- A slim toggle beside the preview shows and hides the editor pane.
+
+### Fixed
+
+- Preview mode buttons now show their labels immediately when a tab is created.
+
 ## [0.3.1] - 2026-07-08
 
 ### Added
