@@ -29,6 +29,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocalServer>
@@ -83,7 +84,7 @@
 #include "md4c-html.h"
 
 #ifndef MDV_VERSION
-#define MDV_VERSION "0.3.2"
+#define MDV_VERSION "0.4.0"
 #endif
 
 // ---------------------------------------------------------------------------
@@ -755,6 +756,176 @@ public:
     DetachableTabBar *detachableTabBar() const
     {
         return qobject_cast<DetachableTabBar *>(tabBar());
+    }
+};
+
+// QPlainTextEdit with Markdown-aware input helpers:
+//  - Enter inherits the current line's indentation and continues list/quote
+//    markers (bullets, numbered lists, checkboxes, "> " quotes); numbered
+//    items get the next number, checkboxes restart unchecked. Enter on a
+//    marker-only line clears the marker to end the list instead.
+//  - Shift+Enter inserts a plain newline (indentation only, no marker).
+//  - Tab indents all lines of a multi-line selection; Shift+Tab unindents
+//    the selected lines (or the current line without a selection).
+class MarkdownEditor : public QPlainTextEdit {
+    Q_OBJECT
+
+public:
+    using QPlainTextEdit::QPlainTextEdit;
+
+protected:
+    void keyPressEvent(QKeyEvent *event) override
+    {
+        const int key = event->key();
+        if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+            const Qt::KeyboardModifiers mods = event->modifiers() & ~Qt::KeypadModifier;
+            if (mods == Qt::NoModifier || mods == Qt::ShiftModifier) {
+                handleReturn(mods == Qt::ShiftModifier);
+                return;
+            }
+        } else if (key == Qt::Key_Tab || key == Qt::Key_Backtab) {
+            if (handleIndentKey(key == Qt::Key_Backtab)) {
+                return;
+            }
+        }
+        QPlainTextEdit::keyPressEvent(event);
+    }
+
+private:
+    static constexpr int kIndentWidth = 4;
+
+    // Leading whitespace of `line`, clipped to the cursor column so pressing
+    // Enter inside the indentation only carries what precedes the cursor.
+    static QString leadingIndent(const QString &line, int column)
+    {
+        int len = 0;
+        while (len < line.size()
+               && (line.at(len) == QLatin1Char(' ') || line.at(len) == QLatin1Char('\t'))) {
+            ++len;
+        }
+        return line.left(qMin(len, column));
+    }
+
+    // If `line` starts a list item or quote, returns the prefix length
+    // (indent + marker) and sets `marker` to what the next line should start
+    // with (numbers incremented, checkboxes reset to unchecked, indent not
+    // included). Returns -1 when the line has no marker.
+    static int continuationMarker(const QString &line, QString *marker)
+    {
+        static const QRegularExpression orderedRe(
+            QStringLiteral("^[ \\t]*(\\d{1,9})([.)])([ \\t]+)(\\[[ xX]\\][ \\t]*)?"));
+        static const QRegularExpression bulletRe(
+            QStringLiteral("^[ \\t]*([-*+])([ \\t]+)(\\[[ xX]\\][ \\t]*)?"));
+        static const QRegularExpression quoteRe(
+            QStringLiteral("^[ \\t]*((?:>[ \\t]?)+)"));
+
+        QRegularExpressionMatch m = orderedRe.match(line);
+        if (m.hasMatch()) {
+            *marker = QString::number(m.captured(1).toLongLong() + 1) + m.captured(2)
+                + m.captured(3);
+            if (!m.captured(4).isEmpty()) {
+                *marker += QStringLiteral("[ ] ");
+            }
+            return int(m.capturedLength(0));
+        }
+        m = bulletRe.match(line);
+        if (m.hasMatch()) {
+            *marker = m.captured(1) + m.captured(2);
+            if (!m.captured(3).isEmpty()) {
+                *marker += QStringLiteral("[ ] ");
+            }
+            return int(m.capturedLength(0));
+        }
+        m = quoteRe.match(line);
+        if (m.hasMatch()) {
+            *marker = m.captured(1);
+            return int(m.capturedLength(0));
+        }
+        return -1;
+    }
+
+    void handleReturn(bool plain)
+    {
+        QTextCursor cursor = textCursor();
+        cursor.beginEditBlock();
+        if (cursor.hasSelection()) {
+            cursor.removeSelectedText();
+        }
+
+        const QString line = cursor.block().text();
+        const int column = cursor.positionInBlock();
+
+        QString insertion = QStringLiteral("\n") + leadingIndent(line, column);
+        if (!plain) {
+            QString marker;
+            const int prefixLen = continuationMarker(line, &marker);
+            if (prefixLen >= 0 && column >= prefixLen) {
+                if (QStringView(line).mid(prefixLen).trimmed().isEmpty()) {
+                    // Enter on a marker-only item ends the list: clear the
+                    // line instead of adding another empty item.
+                    cursor.movePosition(QTextCursor::StartOfBlock);
+                    cursor.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+                    cursor.removeSelectedText();
+                    cursor.endEditBlock();
+                    setTextCursor(cursor);
+                    return;
+                }
+                insertion += marker;
+            }
+        }
+        cursor.insertText(insertion);
+        cursor.endEditBlock();
+        setTextCursor(cursor);
+        ensureCursorVisible();
+    }
+
+    // Tab/Shift+Tab as block indent/unindent. Returns false when the default
+    // key handling should run instead (plain Tab without a multi-line
+    // selection stays an ordinary tab insertion).
+    bool handleIndentKey(bool unindent)
+    {
+        const QTextCursor cursor = textCursor();
+        const int start = cursor.selectionStart();
+        const int end = cursor.selectionEnd();
+        const QTextBlock startBlock = document()->findBlock(start);
+        QTextBlock endBlock = document()->findBlock(end);
+        const bool multiline = startBlock != endBlock;
+        if (!unindent && !multiline) {
+            return false;
+        }
+        // A selection ending at the very start of a line doesn't include it.
+        if (multiline && endBlock.position() == end) {
+            endBlock = endBlock.previous();
+        }
+
+        QTextCursor edit(document());
+        edit.beginEditBlock();
+        const int lastBlockNumber = endBlock.blockNumber();
+        for (QTextBlock block = startBlock;
+             block.isValid() && block.blockNumber() <= lastBlockNumber; block = block.next()) {
+            QTextCursor lineCursor(block);
+            if (unindent) {
+                const QString text = block.text();
+                int remove = 0;
+                if (text.startsWith(QLatin1Char('\t'))) {
+                    remove = 1;
+                } else {
+                    while (remove < kIndentWidth && remove < text.size()
+                           && text.at(remove) == QLatin1Char(' ')) {
+                        ++remove;
+                    }
+                }
+                if (remove > 0) {
+                    lineCursor.movePosition(QTextCursor::NextCharacter, QTextCursor::KeepAnchor,
+                                            remove);
+                    lineCursor.removeSelectedText();
+                }
+            } else if (!block.text().isEmpty()) {
+                lineCursor.insertText(QString(kIndentWidth, QLatin1Char(' ')));
+            }
+        }
+        edit.endEditBlock();
+        return true;
     }
 };
 
@@ -2723,7 +2894,7 @@ DocumentTab::DocumentTab(MainWindow *window, QWidget *parent)
     , window_(window)
 {
     outline_ = new QTreeWidget(this);
-    editor_ = new QPlainTextEdit(this);
+    editor_ = new MarkdownEditor(this);
     preview_ = new QWebEngineView(this);
 
     outline_->setHeaderHidden(true);

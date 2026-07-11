@@ -17,6 +17,10 @@ Viewer mode (`-v`), with the editor pane hidden:
 ## Features
 
 - Edit Markdown in the left pane
+- Markdown-aware input helpers: auto-indent on Enter, automatic continuation
+  of list and quote markers (bullets, numbered lists, checkboxes, quotes),
+  Shift+Enter for a plain newline, and Tab / Shift+Tab to indent or unindent
+  selected lines
 - Live GitHub Flavored Markdown preview (tables, task lists, strikethrough,
   autolinks, raw HTML) rendered with Qt WebEngine + [md4c](https://github.com/mity/md4c)
 - Two-way synchronized scrolling between the editor and the preview,

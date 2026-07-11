@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 English | [日本語](CHANGELOG.ja.md)
 
+## [0.4.0] - 2026-07-11
+
+### Added
+
+- Markdown-aware input helpers in the editor:
+  - Pressing Enter carries the current line's indentation to the next line.
+  - List and quote markers (`-` `*` `+`, numbered `1.` / `1)` with the next
+    number, checkboxes `- [ ]`, and `>` quotes) continue automatically on
+    the next line; pressing Enter on a marker-only line clears it and ends
+    the list.
+  - Shift+Enter inserts a plain newline (indentation only, no marker).
+  - Tab indents all lines of a multi-line selection; Shift+Tab unindents
+    the selected lines (or the current line without a selection).
+
 ## [0.3.2] - 2026-07-09
 
 ### Added
