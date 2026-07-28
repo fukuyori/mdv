@@ -23,6 +23,8 @@ Viewer mode (`-v`), with the editor pane hidden:
   selected lines
 - Live GitHub Flavored Markdown preview (tables, task lists, strikethrough,
   autolinks, raw HTML) rendered with Qt WebEngine + [md4c](https://github.com/mity/md4c)
+- Copy selected preview text from its context menu, or copy an entire code
+  block with the button shown on the block
 - Two-way synchronized scrolling between the editor and the preview,
   anchored on headings
 - Browse headings in a left-side outline and jump to them

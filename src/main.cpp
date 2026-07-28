@@ -84,7 +84,7 @@
 #include "md4c-html.h"
 
 #ifndef MDV_VERSION
-#define MDV_VERSION "0.4.0"
+#define MDV_VERSION "0.5.0"
 #endif
 
 // ---------------------------------------------------------------------------
@@ -287,9 +287,44 @@ static QString previewScript()
         "  ys.push(document.documentElement.scrollHeight);"
         "  return ys;"
         "}"
+        "function __mdvSetCopyButtonIcon(button, copied) {"
+        "  button.replaceChildren();"
+        "  var icon = document.createElement('span');"
+        "  icon.className = copied ? 'mdv-copy-check' : 'mdv-copy-icon';"
+        "  icon.setAttribute('aria-hidden', 'true');"
+        "  if (copied) icon.textContent = '\\u2713';"
+        "  button.appendChild(icon);"
+        "  var label = copied ? __mdvCopiedLabel : __mdvCopyCodeLabel;"
+        "  button.title = label;"
+        "  button.setAttribute('aria-label', label);"
+        "}"
         "function __mdvSetContent(html) {"
         "  var c = document.getElementById('content');"
         "  c.innerHTML = html;"
+        "  var codeBlocks = c.querySelectorAll('pre');"
+        "  for (var j = 0; j < codeBlocks.length; j++) {"
+        "    var pre = codeBlocks[j];"
+        "    var wrapper = document.createElement('div');"
+        "    wrapper.className = 'mdv-code-block';"
+        "    pre.parentNode.insertBefore(wrapper, pre);"
+        "    wrapper.appendChild(pre);"
+        "    var button = document.createElement('button');"
+        "    button.type = 'button';"
+        "    button.className = 'mdv-copy-code';"
+        "    __mdvSetCopyButtonIcon(button, false);"
+        "    button.addEventListener('click', function() {"
+        "      if (!__mdvBridge) return;"
+        "      var code = this.parentNode.querySelector('pre code');"
+        "      var text = code ? code.textContent : this.parentNode.querySelector('pre').textContent;"
+        "      __mdvBridge.copyText(text);"
+        "      var copyButton = this;"
+        "      __mdvSetCopyButtonIcon(copyButton, true);"
+        "      window.setTimeout(function() {"
+        "        __mdvSetCopyButtonIcon(copyButton, false);"
+        "      }, 1200);"
+        "    });"
+        "    wrapper.appendChild(button);"
+        "  }"
         "  var used = {};"
         "  var hs = c.querySelectorAll('h1,h2,h3,h4,h5,h6');"
         "  for (var i = 0; i < hs.length; i++) {"
@@ -353,12 +388,20 @@ public:
     using QObject::QObject;
 
     std::function<void(int, int, double, double)> onScrolled;
+    std::function<void(const QString &)> onCopyText;
 
 public slots:
     void previewScrolled(int headingCount, int segment, double t, double fraction)
     {
         if (onScrolled) {
             onScrolled(headingCount, segment, t, fraction);
+        }
+    }
+
+    void copyText(const QString &text)
+    {
+        if (onCopyText) {
+            onCopyText(text);
         }
     }
 };
@@ -1344,6 +1387,8 @@ public:
         if (key == "redo") return ja ? "やり直し(&R)" : "&Redo";
         if (key == "cut") return ja ? "切り取り(&T)" : "Cu&t";
         if (key == "copy") return ja ? "コピー(&C)" : "&Copy";
+        if (key == "copyCode") return ja ? "コードをコピー" : "Copy code";
+        if (key == "copiedCode") return ja ? "コードをコピーしました" : "Code copied";
         if (key == "paste") return ja ? "貼り付け(&P)" : "&Paste";
         if (key == "find") return ja ? "検索(&F)..." : "&Find...";
         if (key == "replace") return ja ? "置換(&R)..." : "&Replace...";
@@ -1781,8 +1826,10 @@ private:
         });
 
         exitAction_ = new QAction("E&xit", this);
-        exitAction_->setShortcut(QKeySequence::Quit);
-        connect(exitAction_, &QAction::triggered, this, [this] { close(); });
+        exitAction_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Q));
+        connect(exitAction_, &QAction::triggered, this, [] {
+            QApplication::closeAllWindows();
+        });
 
         undoAction_ = new QAction("&Undo", this);
         undoAction_->setShortcut(QKeySequence::Undo);
@@ -2752,6 +2799,7 @@ private:
                 "QToolButton#editorPaneToggle { min-width: 22px; max-width: 22px; padding: 0; }"
                 "QPlainTextEdit, QTreeWidget { background: #1f1f1f; color: #e8eaed; border: 1px solid #3c4043; selection-background-color: #34517a; }"
                 "QLineEdit, QCheckBox, QPushButton, QComboBox { background: #2b2c2f; color: #e8eaed; border: 1px solid #5f6368; padding: 3px; }"
+                "QComboBox QAbstractItemView { background: #2b2c2f; color: #e8eaed; border: 1px solid #5f6368; selection-background-color: #34517a; selection-color: #ffffff; }"
                 "QToolButton { background: #2b2c2f; color: #e8eaed; border: 1px solid #5f6368; padding: 3px 10px; }"
                 "QToolButton:checked { background: #34517a; }"
                 "QTabBar::tab { background: #2b2c2f; color: #e8eaed; padding: 6px 10px; }"
@@ -2766,6 +2814,7 @@ private:
                 "QToolButton#editorPaneToggle { min-width: 22px; max-width: 22px; padding: 0; }"
                 "QPlainTextEdit, QTreeWidget { background: #fbf4e6; color: #43372b; border: 1px solid #d4c2a3; selection-background-color: #d8c49a; }"
                 "QLineEdit, QCheckBox, QPushButton, QComboBox { background: #fbf4e6; color: #43372b; border: 1px solid #d4c2a3; padding: 3px; }"
+                "QComboBox QAbstractItemView { background: #fbf4e6; color: #43372b; border: 1px solid #d4c2a3; selection-background-color: #d8c49a; selection-color: #2f261e; }"
                 "QToolButton { background: #fbf4e6; color: #43372b; border: 1px solid #d4c2a3; padding: 3px 10px; }"
                 "QToolButton:checked { background: #d8c49a; }"
                 "QTabBar::tab { background: #fbf4e6; color: #43372b; padding: 6px 10px; }"
@@ -2780,6 +2829,7 @@ private:
                 "QToolButton#editorPaneToggle { min-width: 22px; max-width: 22px; padding: 0; }"
                 "QPlainTextEdit, QTreeWidget { background: #ffffff; color: #202124; border: 1px solid #d0d4dc; selection-background-color: #cfe3ff; selection-color: #111827; }"
                 "QLineEdit, QCheckBox, QPushButton, QComboBox { background: #ffffff; color: #202124; border: 1px solid #d0d4dc; padding: 3px; }"
+                "QComboBox QAbstractItemView { background: #ffffff; color: #202124; border: 1px solid #d0d4dc; selection-background-color: #cfe3ff; selection-color: #111827; }"
                 "QToolButton { background: #ffffff; color: #202124; border: 1px solid #d0d4dc; padding: 3px 10px; }"
                 "QToolButton:checked { background: #cfe3ff; color: #111827; }"
                 "QTabBar::tab { background: #ffffff; color: #202124; padding: 6px 10px; }"
@@ -2909,7 +2959,7 @@ DocumentTab::DocumentTab(MainWindow *window, QWidget *parent)
     editor_->setFont(editorFont);
 
     preview_->setPage(new PreviewPage(preview_));
-    preview_->setContextMenuPolicy(Qt::NoContextMenu);
+    preview_->setContextMenuPolicy(Qt::DefaultContextMenu);
     // Remote images (README badges etc.) referenced from the local page.
     preview_->settings()->setAttribute(QWebEngineSettings::LocalContentCanAccessRemoteUrls, true);
     preview_->settings()->setAttribute(QWebEngineSettings::JavascriptCanOpenWindows, false);
@@ -2924,6 +2974,12 @@ DocumentTab::DocumentTab(MainWindow *window, QWidget *parent)
     auto *bridge = new PreviewBridge(this);
     bridge->onScrolled = [this](int headingCount, int segment, double t, double fraction) {
         syncEditorToPreview(headingCount, segment, t, fraction);
+    };
+    bridge->onCopyText = [this](const QString &text) {
+        QApplication::clipboard()->setText(text);
+        if (isActive()) {
+            window_->statusBar()->showMessage(window_->uiText("copiedCode"), 2000);
+        }
     };
     auto *channel = new QWebChannel(preview_->page());
     channel->registerObject(QStringLiteral("mdv"), bridge);
@@ -3706,14 +3762,39 @@ QString DocumentTab::buildPreviewTemplate() const
         ".mdv-tr > :first-child { margin-top: 4px; }"
         ".mdv-tr > :last-child { margin-bottom: 4px; }"
         ".mdv-tr-pending { color: %2; font-style: italic; }")
-        .arg(link, quoteFg);
+        .arg(link, quoteFg)
+        + QString(
+        ".mdv-code-block { position: relative; margin: 1em 0; }"
+        ".mdv-code-block pre { box-sizing: border-box; margin: 0; padding-top: 38px; }"
+        ".mdv-copy-code { position: absolute; top: 6px; right: 6px; z-index: 1; "
+        "display: flex; align-items: center; justify-content: center; width: 30px; height: 28px; "
+        "padding: 0; border: 1px solid %1; border-radius: 4px; "
+        "background: %2; color: %3; cursor: pointer; }"
+        ".mdv-copy-code:hover { border-color: %4; }"
+        ".mdv-copy-code:focus-visible { outline: 2px solid %4; outline-offset: 1px; }"
+        ".mdv-copy-icon { position: relative; display: block; width: 14px; height: 14px; }"
+        ".mdv-copy-icon::before, .mdv-copy-icon::after { content: ''; position: absolute; "
+        "box-sizing: border-box; width: 9px; height: 10px; border: 1.5px solid currentColor; border-radius: 1px; }"
+        ".mdv-copy-icon::before { left: 1px; top: 1px; opacity: 0.65; }"
+        ".mdv-copy-icon::after { left: 4px; top: 4px; background: %2; }"
+        ".mdv-copy-check { font-size: 17px; font-weight: 700; line-height: 1; }")
+        .arg(border, bg, fg, link);
+
+    const QByteArray copyCodeLabel = QJsonDocument(
+        QJsonArray{window_->uiText("copyCode")}).toJson(QJsonDocument::Compact);
+    const QByteArray copiedLabel = QJsonDocument(
+        QJsonArray{window_->uiText("copiedCode")}).toJson(QJsonDocument::Compact);
 
     return QStringLiteral(
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>")
         + css
         + QStringLiteral("</style></head><body><div id=\"content\"></div><script>")
         + webChannelScript()
-        + QStringLiteral("</script><script>")
+        + QStringLiteral("</script><script>var __mdvCopyCodeLabel=")
+        + QString::fromUtf8(copyCodeLabel)
+        + QStringLiteral("[0];var __mdvCopiedLabel=")
+        + QString::fromUtf8(copiedLabel)
+        + QStringLiteral("[0];")
         + previewScript()
         + QStringLiteral("</script></body></html>");
 }

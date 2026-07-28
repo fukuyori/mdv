@@ -1,0 +1,5 @@
+set(__QT_DEPLOY_TARGET_md4c_FILE D:/home/source/cpp/mdv/build-combo-popup-test/md4c.lib)
+set(__QT_DEPLOY_TARGET_md4c_TYPE STATIC_LIBRARY)
+set(__QT_DEPLOY_TARGET_mdv_FILE D:/home/source/cpp/mdv/build-combo-popup-test/mdv.exe)
+set(__QT_DEPLOY_TARGET_mdv_TYPE EXECUTABLE)
+set(__QT_DEPLOY_TARGET_mdv_RUNTIME_DLLS C:/Qt/6.11.1/msvc2022_64/bin/Qt6WebEngineWidgets.dll;C:/Qt/6.11.1/msvc2022_64/bin/Qt6WebEngineCore.dll;C:/Qt/6.11.1/msvc2022_64/bin/Qt6WebChannel.dll;C:/Qt/6.11.1/msvc2022_64/bin/Qt6Positioning.dll;C:/Qt/6.11.1/msvc2022_64/bin/Qt6PrintSupport.dll;C:/Qt/6.11.1/msvc2022_64/bin/Qt6QuickWidgets.dll;C:/Qt/6.11.1/msvc2022_64/bin/Qt6Widgets.dll;C:/Qt/6.11.1/msvc2022_64/bin/Qt6Quick.dll;C:/Qt/6.11.1/msvc2022_64/bin/Qt6OpenGL.dll;C:/Qt/6.11.1/msvc2022_64/bin/Qt6Gui.dll;C:/Qt/6.11.1/msvc2022_64/bin/Qt6QmlMeta.dll;C:/Qt/6.11.1/msvc2022_64/bin/Qt6QmlModels.dll;C:/Qt/6.11.1/msvc2022_64/bin/Qt6QmlWorkerScript.dll;C:/Qt/6.11.1/msvc2022_64/bin/Qt6Qml.dll;C:/Qt/6.11.1/msvc2022_64/bin/Qt6Network.dll;C:/Qt/6.11.1/msvc2022_64/bin/Qt6Core.dll)

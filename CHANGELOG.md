@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 English | [日本語](CHANGELOG.ja.md)
 
+## [0.5.0] - 2026-07-28
+
+### Added
+
+- The preview context menu can copy selected rendered text.
+- Every preview code block has an icon button that copies the entire block;
+  the icon briefly changes to a check mark after copying.
+- Ctrl+Q exits the application, including all open mdv windows.
+
+### Fixed
+
+- Model and target-language choices in Translation Settings remain readable
+  when their drop-down lists are open in light, sepia, and dark themes.
+
 ## [0.4.0] - 2026-07-11
 
 ### Added
