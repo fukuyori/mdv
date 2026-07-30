@@ -84,7 +84,7 @@
 #include "md4c-html.h"
 
 #ifndef MDV_VERSION
-#define MDV_VERSION "0.5.0"
+#define MDV_VERSION "0.5.1"
 #endif
 
 // ---------------------------------------------------------------------------
@@ -286,6 +286,29 @@ static QString previewScript()
         "    ys.push(hs[i].getBoundingClientRect().top + window.scrollY);"
         "  ys.push(document.documentElement.scrollHeight);"
         "  return ys;"
+        "}"
+        "function __mdvJumpToHeading(index, count, title, occurrence) {"
+        "  var hs = __mdvHeadings();"
+        "  if (!hs.length) return;"
+        "  var target = null;"
+        "  if (hs.length === count && index >= 0 && index < hs.length) {"
+        "    target = hs[index];"
+        "  } else {"
+        "    var seen = 0;"
+        "    for (var i = 0; i < hs.length; i++) {"
+        "      if (hs[i].textContent.trim() !== title) continue;"
+        "      if (seen++ === occurrence) { target = hs[i]; break; }"
+        "    }"
+        "  }"
+        "  if (!target) {"
+        "    var mapped = count > 1"
+        "      ? Math.round(index * (hs.length - 1) / (count - 1))"
+        "      : 0;"
+        "    target = hs[Math.max(0, Math.min(mapped, hs.length - 1))];"
+        "  }"
+        "  __mdvProgTs = Date.now();"
+        "  var y = target.getBoundingClientRect().top + window.scrollY - 8;"
+        "  window.scrollTo(0, Math.max(0, y));"
         "}"
         "function __mdvSetCopyButtonIcon(button, copied) {"
         "  button.replaceChildren();"
@@ -1074,11 +1097,25 @@ public:
         }
 
         const int position = item->data(0, Qt::UserRole).toInt();
+        const int headingIndex = item->data(0, Qt::UserRole + 1).toInt();
+        const QString headingTitle = item->data(0, Qt::UserRole + 2).toString();
+        const int titleOccurrence = item->data(0, Qt::UserRole + 3).toInt();
         QTextCursor cursor(editor_->document());
         cursor.setPosition(position);
         editor_->setTextCursor(cursor);
         editor_->setFocus();
         editor_->centerCursor();
+
+        if (previewLoaded_) {
+            const QByteArray titleJson = QJsonDocument(
+                QJsonArray{headingTitle}).toJson(QJsonDocument::Compact);
+            preview_->page()->runJavaScript(
+                QStringLiteral("__mdvJumpToHeading(%1,%2,%3[0],%4);")
+                    .arg(headingIndex)
+                    .arg(editorHeadingPositions().size())
+                    .arg(QString::fromUtf8(titleJson))
+                    .arg(titleOccurrence));
+        }
     }
 
     void syncPreviewToEditor();
@@ -3109,6 +3146,8 @@ void DocumentTab::updateOutline()
     outline_->clear();
 
     QVector<QTreeWidgetItem *> latestByLevel(7, nullptr);
+    QHash<QString, int> titleOccurrences;
+    int headingIndex = 0;
     bool inFence = false;
     QTextBlock block = editor_->document()->firstBlock();
 
@@ -3127,6 +3166,10 @@ void DocumentTab::updateOutline()
             if (heading.level > 0) {
                 auto *item = new QTreeWidgetItem(QStringList(heading.title));
                 item->setData(0, Qt::UserRole, block.position());
+                item->setData(0, Qt::UserRole + 1, headingIndex++);
+                item->setData(0, Qt::UserRole + 2, heading.title);
+                item->setData(0, Qt::UserRole + 3, titleOccurrences.value(heading.title));
+                titleOccurrences[heading.title] = titleOccurrences.value(heading.title) + 1;
 
                 QTreeWidgetItem *parent = nullptr;
                 for (int level = heading.level - 1; level >= 1; --level) {
@@ -3969,12 +4012,13 @@ protected:
 int main(int argc, char *argv[])
 {
     QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
-    MdvApplication app(argc, argv);
     QApplication::setOrganizationName("mdv");
     QApplication::setApplicationName("mdv");
     QApplication::setApplicationVersion(QString::fromUtf8(MDV_VERSION));
-    QApplication::setWindowIcon(QIcon(QStringLiteral(":/icon.svg")));
     QGuiApplication::setDesktopFileName(QStringLiteral("mdv"));
+
+    MdvApplication app(argc, argv);
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/icon.svg")));
 
     QCommandLineParser parser;
     parser.setApplicationDescription("Simple Markdown viewer/editor");
