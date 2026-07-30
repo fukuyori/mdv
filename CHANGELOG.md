@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 English | [日本語](CHANGELOG.ja.md)
 
+## [0.5.1] - 2026-07-30
+
+### Fixed
+
+- Clicking a heading in the outline now scrolls the rendered preview to the
+  corresponding section, including when the editor pane is hidden.
+- Linux application metadata is initialized before the GUI application,
+  preventing duplicate host portal app ID registration warnings.
+
 ## [0.5.0] - 2026-07-28
 
 ### Added
