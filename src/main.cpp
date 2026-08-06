@@ -84,7 +84,7 @@
 #include "md4c-html.h"
 
 #ifndef MDV_VERSION
-#define MDV_VERSION "0.5.1"
+#define MDV_VERSION "0.5.2"
 #endif
 
 // ---------------------------------------------------------------------------
@@ -104,7 +104,7 @@ static QString markdownToHtml(const QString &markdown)
             static_cast<QByteArray *>(userdata)->append(text, qsizetype(size));
         },
         &html,
-        MD_DIALECT_GITHUB,
+        MD_DIALECT_GITHUB | MD_FLAG_LATEXMATHSPANS,
         0);
 
     return QString::fromUtf8(html);
@@ -150,8 +150,8 @@ struct MdBlock {
 };
 
 // Blocks are groups of lines separated by blank lines, except that fenced
-// code stays together; this is the unit of translation and of pairing in
-// the bilingual view.
+// code and display math stay together; this is the unit of translation and
+// of pairing in the bilingual view.
 static QList<MdBlock> splitMarkdownBlocks(const QString &markdown)
 {
     QList<MdBlock> blocks;
@@ -159,11 +159,12 @@ static QList<MdBlock> splitMarkdownBlocks(const QString &markdown)
     int currentStart = 0;
     int lineStart = 0;
     bool inFence = false;
+    bool inDisplayMath = false;
 
     const QStringList lines = markdown.split(QLatin1Char('\n'));
     for (const QString &line : lines) {
         const QString trimmed = line.trimmed();
-        if (!inFence && trimmed.isEmpty()) {
+        if (!inFence && !inDisplayMath && trimmed.isEmpty()) {
             if (!current.isEmpty()) {
                 blocks.append({current.join(QLatin1Char('\n')), currentStart});
                 current.clear();
@@ -173,8 +174,12 @@ static QList<MdBlock> splitMarkdownBlocks(const QString &markdown)
                 currentStart = lineStart;
             }
             current.append(line);
-            if (trimmed.startsWith(QLatin1String("```")) || trimmed.startsWith(QLatin1String("~~~"))) {
+            if (!inDisplayMath
+                && (trimmed.startsWith(QLatin1String("```")) || trimmed.startsWith(QLatin1String("~~~")))) {
                 inFence = !inFence;
+            }
+            if (!inFence && trimmed == QLatin1String("$$")) {
+                inDisplayMath = !inDisplayMath;
             }
         }
         lineStart += line.size() + 1;
@@ -192,6 +197,10 @@ static bool blockIsTranslatable(const QString &block)
 {
     const QString trimmed = block.trimmed();
     if (trimmed.startsWith(QLatin1String("```")) || trimmed.startsWith(QLatin1String("~~~"))) {
+        return false;
+    }
+    if (trimmed.size() >= 4 && trimmed.startsWith(QLatin1String("$$"))
+        && trimmed.endsWith(QLatin1String("$$"))) {
         return false;
     }
     for (const QChar c : trimmed) {
@@ -268,11 +277,65 @@ static QString webChannelScript()
     return script;
 }
 
+static QString resourceText(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return QString();
+    }
+    return QString::fromUtf8(file.readAll());
+}
+
+static QString mermaidLibraryScript()
+{
+    static const QString script = resourceText(QStringLiteral(":/markdown/mermaid.min.js"));
+    return script;
+}
+
+static QString katexLibraryScript()
+{
+    static const QString script = resourceText(QStringLiteral(":/markdown/katex.min.js"));
+    return script;
+}
+
+static QString katexStylesheet()
+{
+    static const QString stylesheet = [] {
+        QString css = resourceText(QStringLiteral(":/markdown/katex.min.css"));
+        const QRegularExpression fontPattern(
+            QStringLiteral(R"(url\(fonts/([^)]+\.woff2)\))"));
+        QSet<QString> fontNames;
+        auto matches = fontPattern.globalMatch(css);
+        while (matches.hasNext()) {
+            fontNames.insert(matches.next().captured(1));
+        }
+
+        for (const QString &fontName : fontNames) {
+            QFile font(QStringLiteral(":/markdown/katex/fonts/") + fontName);
+            if (!font.open(QIODevice::ReadOnly)) {
+                continue;
+            }
+            const QString source = QStringLiteral("url(fonts/%1)").arg(fontName);
+            const QString embedded = QStringLiteral("url(data:font/woff2;base64,%1)")
+                .arg(QString::fromLatin1(font.readAll().toBase64()));
+            css.replace(source, embedded);
+        }
+
+        // Chromium supports WOFF2. Drop the unused fallbacks so a preview
+        // never attempts to resolve font files beside the Markdown document.
+        css.remove(QRegularExpression(
+            QStringLiteral(R"regex(,url\(fonts/[^)]*\.(?:woff|ttf)\) format\("(?:woff|truetype)"\))regex")));
+        return css;
+    }();
+    return stylesheet;
+}
+
 static QString previewScript()
 {
     return QStringLiteral(
         "var __mdvBridge = null;"
         "var __mdvProgTs = 0;"
+        "var __mdvRenderGeneration = 0;"
         "new QWebChannel(qt.webChannelTransport, function(channel) {"
         "  __mdvBridge = channel.objects.mdv;"
         "});"
@@ -321,24 +384,96 @@ static QString previewScript()
         "  button.title = label;"
         "  button.setAttribute('aria-label', label);"
         "}"
+        "function __mdvConfigureExtensions() {"
+        "  if (typeof globalThis.mermaid !== 'undefined') {"
+        "    globalThis.mermaid.initialize({"
+        "      startOnLoad: false, securityLevel: 'strict', theme: __mdvMermaidTheme"
+        "    });"
+        "  }"
+        "}"
+        "function __mdvRenderMath(container) {"
+        "  if (typeof globalThis.katex === 'undefined') return;"
+        "  var equations = container.querySelectorAll('x-equation');"
+        "  for (var i = 0; i < equations.length; i++) {"
+        "    var equation = equations[i];"
+        "    var source = equation.textContent;"
+        "    var display = equation.getAttribute('type') === 'display';"
+        "    equation.classList.toggle('mdv-math-display', display);"
+        "    try {"
+        "      globalThis.katex.render(source, equation, {"
+        "        displayMode: display, throwOnError: false, strict: 'warn', trust: false"
+        "      });"
+        "    } catch (error) {"
+        "      equation.textContent = source;"
+        "      equation.classList.add('mdv-extension-error');"
+        "    }"
+        "  }"
+        "}"
+        "async function __mdvRenderMermaid(nodes, generation) {"
+        "  if (typeof globalThis.mermaid !== 'undefined') {"
+        "    for (var i = 0; i < nodes.length; i++) {"
+        "      var node = nodes[i];"
+        "      var source = node.dataset.source || '';"
+        "      var renderId = 'mdv-mermaid-' + generation + '-' + i;"
+        "      try {"
+        "        var result = await globalThis.mermaid.render(renderId, source);"
+        "        if (generation !== __mdvRenderGeneration || !node.isConnected) return;"
+        "        node.innerHTML = result.svg;"
+        "        node.classList.add('mdv-mermaid-rendered');"
+        "        if (result.bindFunctions) result.bindFunctions(node);"
+        "      } catch (error) {"
+        "        if (generation !== __mdvRenderGeneration || !node.isConnected) return;"
+        "        node.replaceChildren();"
+        "        var message = document.createElement('div');"
+        "        message.className = 'mdv-extension-error';"
+        "        message.textContent = __mdvMermaidErrorLabel;"
+        "        var fallback = document.createElement('pre');"
+        "        fallback.textContent = source;"
+        "        node.appendChild(message);"
+        "        node.appendChild(fallback);"
+        "        var orphan = document.getElementById(renderId);"
+        "        if (orphan && orphan !== node) orphan.remove();"
+        "      }"
+        "    }"
+        "  }"
+        "  if (generation === __mdvRenderGeneration && __mdvBridge)"
+        "    __mdvBridge.extensionsRendered();"
+        "}"
         "function __mdvSetContent(html) {"
+        "  var generation = ++__mdvRenderGeneration;"
         "  var c = document.getElementById('content');"
         "  c.innerHTML = html;"
         "  var codeBlocks = c.querySelectorAll('pre');"
+        "  var mermaidNodes = [];"
         "  for (var j = 0; j < codeBlocks.length; j++) {"
         "    var pre = codeBlocks[j];"
+        "    var code = pre.querySelector('code.language-mermaid');"
         "    var wrapper = document.createElement('div');"
         "    wrapper.className = 'mdv-code-block';"
         "    pre.parentNode.insertBefore(wrapper, pre);"
-        "    wrapper.appendChild(pre);"
+        "    if (code) {"
+        "      var diagram = document.createElement('div');"
+        "      diagram.className = 'mdv-mermaid';"
+        "      diagram.dataset.source = code.textContent;"
+        "      wrapper.dataset.copyText = code.textContent;"
+        "      wrapper.appendChild(diagram);"
+        "      pre.remove();"
+        "      mermaidNodes.push(diagram);"
+        "    } else {"
+        "      wrapper.appendChild(pre);"
+        "    }"
         "    var button = document.createElement('button');"
         "    button.type = 'button';"
         "    button.className = 'mdv-copy-code';"
         "    __mdvSetCopyButtonIcon(button, false);"
         "    button.addEventListener('click', function() {"
         "      if (!__mdvBridge) return;"
-        "      var code = this.parentNode.querySelector('pre code');"
-        "      var text = code ? code.textContent : this.parentNode.querySelector('pre').textContent;"
+        "      var text = this.parentNode.dataset.copyText;"
+        "      if (typeof text === 'undefined') {"
+        "        var code = this.parentNode.querySelector('pre code');"
+        "        var pre = this.parentNode.querySelector('pre');"
+        "        text = code ? code.textContent : (pre ? pre.textContent : '');"
+        "      }"
         "      __mdvBridge.copyText(text);"
         "      var copyButton = this;"
         "      __mdvSetCopyButtonIcon(copyButton, true);"
@@ -348,6 +483,8 @@ static QString previewScript()
         "    });"
         "    wrapper.appendChild(button);"
         "  }"
+        "  __mdvRenderMath(c);"
+        "  __mdvRenderMermaid(mermaidNodes, generation);"
         "  var used = {};"
         "  var hs = c.querySelectorAll('h1,h2,h3,h4,h5,h6');"
         "  for (var i = 0; i < hs.length; i++) {"
@@ -412,6 +549,7 @@ public:
 
     std::function<void(int, int, double, double)> onScrolled;
     std::function<void(const QString &)> onCopyText;
+    std::function<void()> onExtensionsRendered;
 
 public slots:
     void previewScrolled(int headingCount, int segment, double t, double fraction)
@@ -425,6 +563,13 @@ public slots:
     {
         if (onCopyText) {
             onCopyText(text);
+        }
+    }
+
+    void extensionsRendered()
+    {
+        if (onExtensionsRendered) {
+            onExtensionsRendered();
         }
     }
 };
@@ -635,8 +780,9 @@ private:
         return QStringLiteral(
             "You are a professional translator. Translate the Markdown fragment "
             "given by the user into %1. Preserve all Markdown syntax, inline code, "
-            "code blocks, link URLs, image paths, and HTML tags exactly as they are. "
-            "Do not translate the contents of code spans or code blocks. "
+            "code blocks, Mermaid diagrams, LaTeX math, link URLs, image paths, and "
+            "HTML tags exactly as they are. Do not translate the contents of code "
+            "spans, code blocks, diagrams, or math spans. "
             "Output only the translated Markdown, with no explanations or preamble.")
             .arg(targetLanguage_);
     }
@@ -1126,6 +1272,7 @@ private:
     bool pasteImageFileFromClipboard(const QMimeData *mimeData);
 
     void reloadPreviewTemplate();
+    void initializePreviewExtensions();
     void pushPreviewContent();
     QString buildPreviewTemplate() const;
     QUrl previewBaseUrl() const
@@ -1223,6 +1370,7 @@ private:
     QString pendingPreviewHtml_;
     QUrl loadedPreviewBaseUrl_;
     bool previewLoaded_ = false;
+    quint64 previewTemplateGeneration_ = 0;
 
     QString currentFile_;
     QString untitledLabel_;
@@ -1367,13 +1515,13 @@ public:
     }
 
     // Called once at startup, after any files requested on the command line
-    // or handed over by the OS have been opened as tabs: only shows the
-    // blank sample document when nothing else was opened.
+    // or handed over by the OS have been opened as tabs: creates an empty
+    // document only when nothing else was opened.
     void ensureAtLeastOneTab()
     {
         if (tabWidget_->count() == 0) {
             DocumentTab *tab = newBlankTab();
-            tab->setInitialContent(sampleMarkdown());
+            tab->setInitialContent(QString());
         }
     }
 
@@ -1426,6 +1574,7 @@ public:
         if (key == "copy") return ja ? "コピー(&C)" : "&Copy";
         if (key == "copyCode") return ja ? "コードをコピー" : "Copy code";
         if (key == "copiedCode") return ja ? "コードをコピーしました" : "Code copied";
+        if (key == "mermaidError") return ja ? "Mermaid の構文エラー" : "Mermaid syntax error";
         if (key == "paste") return ja ? "貼り付け(&P)" : "&Paste";
         if (key == "find") return ja ? "検索(&F)..." : "&Find...";
         if (key == "replace") return ja ? "置換(&R)..." : "&Replace...";
@@ -1740,39 +1889,6 @@ public:
                 tab->updatePreview();
             }
         }
-    }
-
-    QString sampleMarkdown() const
-    {
-        if (currentLanguage_ == "ja") {
-            return QStringLiteral(
-                "# mdv\n\n"
-                "C++ と Qt で作られたシンプルな Markdown ビュワー/エディタです。\n\n"
-                "## 機能\n\n"
-                "- ライブプレビュー\n"
-                "- 見出しアウトライン\n"
-                "- Markdown ファイルの読み込みと保存\n"
-                "- 軽量な Qt Widgets UI\n\n"
-                "## メモ\n\n"
-                "### 編集\n\n"
-                "左側で入力を始めてください。\n\n"
-                "### ナビゲーション\n\n"
-                "アウトラインの見出しをクリックすると、その位置へ移動します。");
-        }
-
-        return QStringLiteral(
-            "# mdv\n\n"
-            "Simple Markdown viewer/editor built with C++ and Qt.\n\n"
-            "## Features\n\n"
-            "- Live preview\n"
-            "- Heading outline\n"
-            "- Open and save Markdown files\n"
-            "- Lightweight Qt Widgets UI\n\n"
-            "## Notes\n\n"
-            "### Editing\n\n"
-            "Start typing on the left.\n\n"
-            "### Navigation\n\n"
-            "Click a heading in the outline to jump to it.");
     }
 
 protected:
@@ -3004,8 +3120,7 @@ DocumentTab::DocumentTab(MainWindow *window, QWidget *parent)
         if (!ok) {
             return;
         }
-        previewLoaded_ = true;
-        pushPreviewContent();
+        initializePreviewExtensions();
     });
 
     auto *bridge = new PreviewBridge(this);
@@ -3017,6 +3132,9 @@ DocumentTab::DocumentTab(MainWindow *window, QWidget *parent)
         if (isActive()) {
             window_->statusBar()->showMessage(window_->uiText("copiedCode"), 2000);
         }
+    };
+    bridge->onExtensionsRendered = [this] {
+        syncPreviewToEditor();
     };
     auto *channel = new QWebChannel(preview_->page());
     channel->registerObject(QStringLiteral("mdv"), bridge);
@@ -3749,8 +3867,38 @@ void DocumentTab::refreshTranslatedPreview()
 void DocumentTab::reloadPreviewTemplate()
 {
     previewLoaded_ = false;
+    ++previewTemplateGeneration_;
     loadedPreviewBaseUrl_ = previewBaseUrl();
     preview_->setHtml(buildPreviewTemplate(), loadedPreviewBaseUrl_);
+}
+
+void DocumentTab::initializePreviewExtensions()
+{
+    const quint64 generation = previewTemplateGeneration_;
+    const QPointer<DocumentTab> self(this);
+    preview_->page()->runJavaScript(
+        mermaidLibraryScript() + QStringLiteral("\n;true;"),
+        [self, generation](const QVariant &) {
+            if (!self || self->previewTemplateGeneration_ != generation) {
+                return;
+            }
+            self->preview_->page()->runJavaScript(
+                katexLibraryScript() + QStringLiteral("\n;true;"),
+                [self, generation](const QVariant &) {
+                    if (!self || self->previewTemplateGeneration_ != generation) {
+                        return;
+                    }
+                    self->preview_->page()->runJavaScript(
+                        QStringLiteral("__mdvConfigureExtensions();"),
+                        [self, generation](const QVariant &) {
+                            if (!self || self->previewTemplateGeneration_ != generation) {
+                                return;
+                            }
+                            self->previewLoaded_ = true;
+                            self->pushPreviewContent();
+                        });
+                });
+        });
 }
 
 void DocumentTab::pushPreviewContent()
@@ -3766,23 +3914,23 @@ void DocumentTab::pushPreviewContent()
 
 QString DocumentTab::buildPreviewTemplate() const
 {
-    QString bg, fg, link, codeBg, codeFg, quoteFg, quoteBorder, border;
+    QString bg, fg, link, codeBg, codeFg, quoteFg, quoteBorder, border, errorFg;
     const QString theme = window_->currentTheme();
     if (theme == "dark") {
         bg = "#1f1f1f"; fg = "#e8eaed"; link = "#8ab4f8";
         codeBg = "#2b2c2f"; codeFg = "#f1f3f4";
-        quoteFg = "#bdc1c6"; quoteBorder = "#5f6368"; border = "#3c4043";
+        quoteFg = "#bdc1c6"; quoteBorder = "#5f6368"; border = "#3c4043"; errorFg = "#f28b82";
     } else if (theme == "sepia") {
         bg = "#fbf4e6"; fg = "#43372b"; link = "#7b4f18";
         codeBg = "#efe2cb"; codeFg = "#43372b";
-        quoteFg = "#6f604f"; quoteBorder = "#c8ae82"; border = "#d4c2a3";
+        quoteFg = "#6f604f"; quoteBorder = "#c8ae82"; border = "#d4c2a3"; errorFg = "#a33a2b";
     } else {
         bg = "#ffffff"; fg = "#202124"; link = "#0b57d0";
         codeBg = "#f1f3f4"; codeFg = "#202124";
-        quoteFg = "#5f6368"; quoteBorder = "#dadce0"; border = "#d0d4dc";
+        quoteFg = "#5f6368"; quoteBorder = "#dadce0"; border = "#d0d4dc"; errorFg = "#b3261e";
     }
 
-    const QString css = QString(
+    const QString css = katexStylesheet() + QString(
         "body { margin: 16px 20px; background: %1; color: %2; "
         "font-family: %3; font-size: %4pt; line-height: 1.55; overflow-wrap: break-word; }"
         "a { color: %5; }"
@@ -3820,13 +3968,23 @@ QString DocumentTab::buildPreviewTemplate() const
         "box-sizing: border-box; width: 9px; height: 10px; border: 1.5px solid currentColor; border-radius: 1px; }"
         ".mdv-copy-icon::before { left: 1px; top: 1px; opacity: 0.65; }"
         ".mdv-copy-icon::after { left: 4px; top: 4px; background: %2; }"
-        ".mdv-copy-check { font-size: 17px; font-weight: 700; line-height: 1; }")
-        .arg(border, bg, fg, link);
+        ".mdv-copy-check { font-size: 17px; font-weight: 700; line-height: 1; }"
+        ".mdv-mermaid { box-sizing: border-box; min-height: 48px; padding: 38px 8px 8px; overflow-x: auto; text-align: center; }"
+        ".mdv-mermaid svg { display: inline-block; max-width: 100%; height: auto; }"
+        ".mdv-mermaid pre { margin: 8px 0 0; padding: 10px 12px; text-align: left; }"
+        ".mdv-math-display { display: block; overflow-x: auto; overflow-y: hidden; }"
+        ".mdv-extension-error { color: %5; font-weight: 600; text-align: left; }")
+        .arg(border, bg, fg, link, errorFg);
 
     const QByteArray copyCodeLabel = QJsonDocument(
         QJsonArray{window_->uiText("copyCode")}).toJson(QJsonDocument::Compact);
     const QByteArray copiedLabel = QJsonDocument(
         QJsonArray{window_->uiText("copiedCode")}).toJson(QJsonDocument::Compact);
+    const QByteArray mermaidErrorLabel = QJsonDocument(
+        QJsonArray{window_->uiText("mermaidError")}).toJson(QJsonDocument::Compact);
+    const QByteArray mermaidTheme = QJsonDocument(
+        QJsonArray{theme == "dark" ? QStringLiteral("dark") : QStringLiteral("neutral")})
+        .toJson(QJsonDocument::Compact);
 
     return QStringLiteral(
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>")
@@ -3837,6 +3995,10 @@ QString DocumentTab::buildPreviewTemplate() const
         + QString::fromUtf8(copyCodeLabel)
         + QStringLiteral("[0];var __mdvCopiedLabel=")
         + QString::fromUtf8(copiedLabel)
+        + QStringLiteral("[0];var __mdvMermaidErrorLabel=")
+        + QString::fromUtf8(mermaidErrorLabel)
+        + QStringLiteral("[0];var __mdvMermaidTheme=")
+        + QString::fromUtf8(mermaidTheme)
         + QStringLiteral("[0];")
         + previewScript()
         + QStringLiteral("</script></body></html>");

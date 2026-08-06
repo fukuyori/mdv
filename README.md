@@ -49,6 +49,8 @@ Viewer mode (`-v`), with the editor pane hidden:
   the preview (all matches marked, current match emphasized and scrolled to)
 - Undo, redo, cut, copy, and paste text
 - Paste clipboard images or copied image files as Markdown image links
+- Render Mermaid diagrams and inline or display LaTeX math directly in the
+  preview, using bundled offline libraries
 - Switch between light, dark, and sepia themes
 - Change editor, outline, and preview font size
 - Choose editor and preview fonts
@@ -59,6 +61,31 @@ Viewer mode (`-v`), with the editor pane hidden:
 - Switch the UI language between English and Japanese
 - Show or hide the editor pane with a slim toggle beside the preview, or from
   the View menu
+
+## Mermaid and math
+
+Mermaid diagrams use a fenced code block with the `mermaid` language:
+
+````markdown
+```mermaid
+flowchart LR
+    A[Markdown] --> B[Preview]
+```
+````
+
+LaTeX math uses `$...$` inline and `$$...$$` for a display equation:
+
+```markdown
+Euler's identity is $e^{i\pi} + 1 = 0$.
+
+$$
+\int_{-\infty}^{\infty} e^{-x^2}\,dx = \sqrt{\pi}
+$$
+```
+
+Mermaid and KaTeX are bundled with mdv, so both features work without an
+internet connection. Invalid Mermaid syntax remains visible as source with an
+error message; invalid math remains visible instead of breaking the preview.
 
 ## Build
 
@@ -140,6 +167,8 @@ marker in the bilingual view; the rest of the document continues.
 ```
 src/main.cpp        Application (window, editor, preview pipeline, sync)
 third_party/md4c/   Vendored md4c Markdown parser (MIT license)
+third_party/mermaid Vendored Mermaid diagram renderer (MIT license)
+third_party/katex/  Vendored KaTeX math renderer and fonts (MIT license)
 resources/          App icon sources and macOS icon set
 scripts/            macOS release, signing, and icon generation scripts
 tools/icon_renderer SVG-to-PNG helper used by the icon script
@@ -147,12 +176,16 @@ tools/icon_renderer SVG-to-PNG helper used by the icon script
 
 ### Preview pipeline
 
-The editor text is converted to HTML with md4c (GitHub dialect) and pushed
+The editor text is converted to HTML with md4c (GitHub dialect plus LaTeX math
+spans) and pushed
 into a `QWebEngineView` that loads a themed HTML template once; subsequent
 updates replace only the page content, debounced at 120 ms, so the preview
 neither flickers nor loses its scroll position while typing. Scroll positions
 are mapped between the panes by pairing headings and interpolating inside
 each segment; the preview reports its own scrolls back over `QWebChannel`.
+Bundled KaTeX renders md4c's math elements, while bundled Mermaid renders
+`mermaid` code fences asynchronously; stale diagram results are discarded
+when the document changes again.
 Clicked links never navigate the preview: http/https/mailto URLs open in the
 system browser and every other scheme is blocked.
 

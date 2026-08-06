@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 English | [日本語](CHANGELOG.ja.md)
 
+## [0.5.2] - 2026-08-06
+
+### Added
+
+- Mermaid fenced code blocks and inline or display LaTeX math are rendered in
+  the preview with bundled offline Mermaid and KaTeX libraries.
+
+### Changed
+
+- The initial untitled document is now empty instead of containing the built-in
+  mdv introduction.
+
 ## [0.5.1] - 2026-07-30
 
 ### Fixed
