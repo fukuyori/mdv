@@ -51,6 +51,8 @@ Viewer mode (`-v`), with the editor pane hidden:
 - Paste clipboard images or copied image files as Markdown image links
 - Render Mermaid diagrams and inline or display LaTeX math directly in the
   preview, using bundled offline libraries
+- Highlight fenced code blocks according to their language
+- Render GitHub-style note, tip, important, warning, and caution alerts
 - Switch between light, dark, and sepia themes
 - Change editor, outline, and preview font size
 - Choose editor and preview fonts
@@ -86,6 +88,34 @@ $$
 Mermaid and KaTeX are bundled with mdv, so both features work without an
 internet connection. Invalid Mermaid syntax remains visible as source with an
 error message; invalid math remains visible instead of breaking the preview.
+
+## Syntax highlighting and alerts
+
+Add a language after the opening fence to highlight a code block:
+
+````markdown
+```cpp
+#include <iostream>
+
+int main() {
+    std::cout << "Hello\n";
+}
+```
+````
+
+GitHub-style alerts use a blockquote whose first line contains one of
+`NOTE`, `TIP`, `IMPORTANT`, `WARNING`, or `CAUTION`:
+
+```markdown
+> [!NOTE]
+> This is useful supplementary information.
+
+> [!WARNING]
+> Check the destination before overwriting a file.
+```
+
+The bundled Highlight.js common-language build and its light, dark, and sepia
+styles work offline. Alert titles are displayed in the selected UI language.
 
 ## Build
 
@@ -169,6 +199,7 @@ src/main.cpp        Application (window, editor, preview pipeline, sync)
 third_party/md4c/   Vendored md4c Markdown parser (MIT license)
 third_party/mermaid Vendored Mermaid diagram renderer (MIT license)
 third_party/katex/  Vendored KaTeX math renderer and fonts (MIT license)
+third_party/highlightjs/ Vendored Highlight.js syntax highlighter (BSD-3-Clause)
 resources/          App icon sources and macOS icon set
 scripts/            macOS release, signing, and icon generation scripts
 tools/icon_renderer SVG-to-PNG helper used by the icon script
@@ -185,7 +216,9 @@ are mapped between the panes by pairing headings and interpolating inside
 each segment; the preview reports its own scrolls back over `QWebChannel`.
 Bundled KaTeX renders md4c's math elements, while bundled Mermaid renders
 `mermaid` code fences asynchronously; stale diagram results are discarded
-when the document changes again.
+when the document changes again. Bundled Highlight.js processes the remaining
+code fences after each content update, and GitHub-style alert blockquotes are
+classified and styled in the same DOM pass.
 Clicked links never navigate the preview: http/https/mailto URLs open in the
 system browser and every other scheme is blocked.
 

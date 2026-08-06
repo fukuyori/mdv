@@ -5,6 +5,10 @@
     <file alias="markdown/mermaid.min.js">../third_party/mermaid/mermaid.min.js</file>
     <file alias="markdown/katex.min.js">../third_party/katex/katex.min.js</file>
     <file alias="markdown/katex.min.css">../third_party/katex/katex.min.css</file>
+    <file alias="markdown/highlight.min.js">../third_party/highlightjs/highlight.min.js</file>
+    <file alias="markdown/highlight-github.min.css">../third_party/highlightjs/github.min.css</file>
+    <file alias="markdown/highlight-github-dark.min.css">../third_party/highlightjs/github-dark.min.css</file>
+    <file alias="markdown/highlight-sepia.min.css">../third_party/highlightjs/atelier-cave-light.min.css</file>
     <file alias="markdown/katex/fonts/KaTeX_AMS-Regular.woff2">../third_party/katex/fonts/KaTeX_AMS-Regular.woff2</file>
     <file alias="markdown/katex/fonts/KaTeX_Caligraphic-Bold.woff2">../third_party/katex/fonts/KaTeX_Caligraphic-Bold.woff2</file>
     <file alias="markdown/katex/fonts/KaTeX_Caligraphic-Regular.woff2">../third_party/katex/fonts/KaTeX_Caligraphic-Regular.woff2</file>

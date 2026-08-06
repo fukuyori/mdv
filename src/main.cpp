@@ -84,7 +84,7 @@
 #include "md4c-html.h"
 
 #ifndef MDV_VERSION
-#define MDV_VERSION "0.5.2"
+#define MDV_VERSION "0.5.3"
 #endif
 
 // ---------------------------------------------------------------------------
@@ -298,6 +298,26 @@ static QString katexLibraryScript()
     return script;
 }
 
+static QString highlightLibraryScript()
+{
+    static const QString script = resourceText(QStringLiteral(":/markdown/highlight.min.js"));
+    return script;
+}
+
+static QString highlightStylesheet(const QString &theme)
+{
+    static const QString light = resourceText(QStringLiteral(":/markdown/highlight-github.min.css"));
+    static const QString dark = resourceText(QStringLiteral(":/markdown/highlight-github-dark.min.css"));
+    static const QString sepia = resourceText(QStringLiteral(":/markdown/highlight-sepia.min.css"));
+    if (theme == QLatin1String("dark")) {
+        return dark;
+    }
+    if (theme == QLatin1String("sepia")) {
+        return sepia;
+    }
+    return light;
+}
+
 static QString katexStylesheet()
 {
     static const QString stylesheet = [] {
@@ -384,6 +404,42 @@ static QString previewScript()
         "  button.title = label;"
         "  button.setAttribute('aria-label', label);"
         "}"
+        "function __mdvRenderAlerts(container) {"
+        "  var quotes = container.querySelectorAll('blockquote');"
+        "  for (var i = 0; i < quotes.length; i++) {"
+        "    var quote = quotes[i];"
+        "    var walker = document.createTreeWalker(quote, NodeFilter.SHOW_TEXT);"
+        "    var textNode = null;"
+        "    while (walker.nextNode()) {"
+        "      if (walker.currentNode.nodeValue.trim()) {"
+        "        textNode = walker.currentNode;"
+        "        break;"
+        "      }"
+        "    }"
+        "    if (!textNode) continue;"
+        "    var match = textNode.nodeValue.match(/^\\s*\\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\\][ \\t]*(?:\\r?\\n)?/);"
+        "    if (!match) continue;"
+        "    var type = match[1];"
+        "    var markerContainer = textNode.parentElement;"
+        "    textNode.nodeValue = textNode.nodeValue.slice(match[0].length);"
+        "    if (markerContainer && markerContainer.tagName === 'P'"
+        "        && !markerContainer.textContent.trim()) markerContainer.remove();"
+        "    quote.classList.add('mdv-alert', 'mdv-alert-' + type.toLowerCase());"
+        "    var title = document.createElement('div');"
+        "    title.className = 'mdv-alert-title';"
+        "    title.textContent = __mdvAlertLabels[type] || type;"
+        "    quote.insertBefore(title, quote.firstChild);"
+        "  }"
+        "}"
+        "function __mdvHighlightCode(container) {"
+        "  if (typeof globalThis.hljs === 'undefined') return;"
+        "  var blocks = container.querySelectorAll('pre code');"
+        "  for (var i = 0; i < blocks.length; i++) {"
+        "    var code = blocks[i];"
+        "    if (code.classList.contains('language-mermaid')) continue;"
+        "    try { globalThis.hljs.highlightElement(code); } catch (error) {}"
+        "  }"
+        "}"
         "function __mdvConfigureExtensions() {"
         "  if (typeof globalThis.mermaid !== 'undefined') {"
         "    globalThis.mermaid.initialize({"
@@ -443,6 +499,8 @@ static QString previewScript()
         "  var generation = ++__mdvRenderGeneration;"
         "  var c = document.getElementById('content');"
         "  c.innerHTML = html;"
+        "  __mdvRenderAlerts(c);"
+        "  __mdvHighlightCode(c);"
         "  var codeBlocks = c.querySelectorAll('pre');"
         "  var mermaidNodes = [];"
         "  for (var j = 0; j < codeBlocks.length; j++) {"
@@ -780,9 +838,9 @@ private:
         return QStringLiteral(
             "You are a professional translator. Translate the Markdown fragment "
             "given by the user into %1. Preserve all Markdown syntax, inline code, "
-            "code blocks, Mermaid diagrams, LaTeX math, link URLs, image paths, and "
-            "HTML tags exactly as they are. Do not translate the contents of code "
-            "spans, code blocks, diagrams, or math spans. "
+            "code blocks, Mermaid diagrams, LaTeX math, GitHub alert markers, link "
+            "URLs, image paths, and HTML tags exactly as they are. Do not translate "
+            "the contents of code spans, code blocks, diagrams, or math spans. "
             "Output only the translated Markdown, with no explanations or preamble.")
             .arg(targetLanguage_);
     }
@@ -1575,6 +1633,11 @@ public:
         if (key == "copyCode") return ja ? "コードをコピー" : "Copy code";
         if (key == "copiedCode") return ja ? "コードをコピーしました" : "Code copied";
         if (key == "mermaidError") return ja ? "Mermaid の構文エラー" : "Mermaid syntax error";
+        if (key == "alertNote") return ja ? "注記" : "Note";
+        if (key == "alertTip") return ja ? "ヒント" : "Tip";
+        if (key == "alertImportant") return ja ? "重要" : "Important";
+        if (key == "alertWarning") return ja ? "警告" : "Warning";
+        if (key == "alertCaution") return ja ? "注意" : "Caution";
         if (key == "paste") return ja ? "貼り付け(&P)" : "&Paste";
         if (key == "find") return ja ? "検索(&F)..." : "&Find...";
         if (key == "replace") return ja ? "置換(&R)..." : "&Replace...";
@@ -3889,13 +3952,20 @@ void DocumentTab::initializePreviewExtensions()
                         return;
                     }
                     self->preview_->page()->runJavaScript(
-                        QStringLiteral("__mdvConfigureExtensions();"),
+                        highlightLibraryScript() + QStringLiteral("\n;true;"),
                         [self, generation](const QVariant &) {
                             if (!self || self->previewTemplateGeneration_ != generation) {
                                 return;
                             }
-                            self->previewLoaded_ = true;
-                            self->pushPreviewContent();
+                            self->preview_->page()->runJavaScript(
+                                QStringLiteral("__mdvConfigureExtensions();"),
+                                [self, generation](const QVariant &) {
+                                    if (!self || self->previewTemplateGeneration_ != generation) {
+                                        return;
+                                    }
+                                    self->previewLoaded_ = true;
+                                    self->pushPreviewContent();
+                                });
                         });
                 });
         });
@@ -3915,22 +3985,29 @@ void DocumentTab::pushPreviewContent()
 QString DocumentTab::buildPreviewTemplate() const
 {
     QString bg, fg, link, codeBg, codeFg, quoteFg, quoteBorder, border, errorFg;
+    QString noteFg, tipFg, importantFg, warningFg, cautionFg;
     const QString theme = window_->currentTheme();
     if (theme == "dark") {
         bg = "#1f1f1f"; fg = "#e8eaed"; link = "#8ab4f8";
         codeBg = "#2b2c2f"; codeFg = "#f1f3f4";
         quoteFg = "#bdc1c6"; quoteBorder = "#5f6368"; border = "#3c4043"; errorFg = "#f28b82";
+        noteFg = "#58a6ff"; tipFg = "#3fb950"; importantFg = "#a371f7";
+        warningFg = "#d29922"; cautionFg = "#f85149";
     } else if (theme == "sepia") {
         bg = "#fbf4e6"; fg = "#43372b"; link = "#7b4f18";
         codeBg = "#efe2cb"; codeFg = "#43372b";
         quoteFg = "#6f604f"; quoteBorder = "#c8ae82"; border = "#d4c2a3"; errorFg = "#a33a2b";
+        noteFg = "#356f9f"; tipFg = "#4d7c45"; importantFg = "#7a5aa6";
+        warningFg = "#946b19"; cautionFg = "#a33a2b";
     } else {
         bg = "#ffffff"; fg = "#202124"; link = "#0b57d0";
         codeBg = "#f1f3f4"; codeFg = "#202124";
         quoteFg = "#5f6368"; quoteBorder = "#dadce0"; border = "#d0d4dc"; errorFg = "#b3261e";
+        noteFg = "#0969da"; tipFg = "#1a7f37"; importantFg = "#8250df";
+        warningFg = "#9a6700"; cautionFg = "#cf222e";
     }
 
-    const QString css = katexStylesheet() + QString(
+    const QString css = katexStylesheet() + highlightStylesheet(theme) + QString(
         "body { margin: 16px 20px; background: %1; color: %2; "
         "font-family: %3; font-size: %4pt; line-height: 1.55; overflow-wrap: break-word; }"
         "a { color: %5; }"
@@ -3938,7 +4015,7 @@ QString DocumentTab::buildPreviewTemplate() const
         "code, pre, kbd { font-family: %7; background: %8; color: %9; border-radius: 4px; }"
         "code, kbd { padding: 2px 4px; font-size: 0.9em; }"
         "pre { padding: 10px 12px; overflow-x: auto; }"
-        "pre code { padding: 0; background: transparent; }"
+        "pre code, pre code.hljs { padding: 0; background: transparent; }"
         "blockquote { margin-left: 0; padding-left: 12px; color: %10; border-left: 3px solid %11; }"
         "img { max-width: 100%; height: auto; }"
         "table { border-collapse: collapse; }"
@@ -3974,7 +4051,17 @@ QString DocumentTab::buildPreviewTemplate() const
         ".mdv-mermaid pre { margin: 8px 0 0; padding: 10px 12px; text-align: left; }"
         ".mdv-math-display { display: block; overflow-x: auto; overflow-y: hidden; }"
         ".mdv-extension-error { color: %5; font-weight: 600; text-align: left; }")
-        .arg(border, bg, fg, link, errorFg);
+        .arg(border, bg, fg, link, errorFg)
+        + QString(
+        ".mdv-alert { margin: 1em 0; padding: 8px 12px; color: inherit; border-left-width: 4px; }"
+        ".mdv-alert > :last-child { margin-bottom: 0; }"
+        ".mdv-alert-title { margin-bottom: 4px; font-weight: 700; }"
+        ".mdv-alert-note { border-left-color: %1; }.mdv-alert-note .mdv-alert-title { color: %1; }"
+        ".mdv-alert-tip { border-left-color: %2; }.mdv-alert-tip .mdv-alert-title { color: %2; }"
+        ".mdv-alert-important { border-left-color: %3; }.mdv-alert-important .mdv-alert-title { color: %3; }"
+        ".mdv-alert-warning { border-left-color: %4; }.mdv-alert-warning .mdv-alert-title { color: %4; }"
+        ".mdv-alert-caution { border-left-color: %5; }.mdv-alert-caution .mdv-alert-title { color: %5; }")
+        .arg(noteFg, tipFg, importantFg, warningFg, cautionFg);
 
     const QByteArray copyCodeLabel = QJsonDocument(
         QJsonArray{window_->uiText("copyCode")}).toJson(QJsonDocument::Compact);
@@ -3985,6 +4072,13 @@ QString DocumentTab::buildPreviewTemplate() const
     const QByteArray mermaidTheme = QJsonDocument(
         QJsonArray{theme == "dark" ? QStringLiteral("dark") : QStringLiteral("neutral")})
         .toJson(QJsonDocument::Compact);
+    const QByteArray alertLabels = QJsonDocument(QJsonObject{
+        {QStringLiteral("NOTE"), window_->uiText("alertNote")},
+        {QStringLiteral("TIP"), window_->uiText("alertTip")},
+        {QStringLiteral("IMPORTANT"), window_->uiText("alertImportant")},
+        {QStringLiteral("WARNING"), window_->uiText("alertWarning")},
+        {QStringLiteral("CAUTION"), window_->uiText("alertCaution")},
+    }).toJson(QJsonDocument::Compact);
 
     return QStringLiteral(
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>")
@@ -3999,7 +4093,9 @@ QString DocumentTab::buildPreviewTemplate() const
         + QString::fromUtf8(mermaidErrorLabel)
         + QStringLiteral("[0];var __mdvMermaidTheme=")
         + QString::fromUtf8(mermaidTheme)
-        + QStringLiteral("[0];")
+        + QStringLiteral("[0];var __mdvAlertLabels=")
+        + QString::fromUtf8(alertLabels)
+        + QStringLiteral(";")
         + previewScript()
         + QStringLiteral("</script></body></html>");
 }

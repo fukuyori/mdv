@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 English | [日本語](CHANGELOG.ja.md)
 
+## [0.5.3] - 2026-08-06
+
+### Added
+
+- Fenced code blocks are syntax-highlighted with bundled Highlight.js themes,
+  and GitHub-style alerts are rendered for all five alert types.
+
 ## [0.5.2] - 2026-08-06
 
 ### Added
