@@ -268,3 +268,24 @@ Inno Setup で Windows インストーラーを作成:
 出力します。先に `.\scripts\build-windows.ps1` を実行してください。
 パッケージ作成時に明示的に再ビルドしたい場合だけ `-Build` を指定します。
 Inno Setup を実行せず `.iss` だけ生成する場合は `-GenerateOnly` を指定してください。
+
+Windows の電子署名(Authenticode):
+
+```powershell
+$env:CODESIGN_CERT = "C:\path\to\cert.pfx"
+$env:CODESIGN_CERT_PASSWORD = "..."
+.\scripts\build-windows.ps1 -Sign
+.\scripts\package-windows-inno.ps1 -Sign
+```
+
+どちらのスクリプトも `-Sign` を受け付け、証明書は環境変数
+`CODESIGN_CERT` から取得します。`CODESIGN_CERT` には `.pfx` のパス、
+証明書ストア内の SHA1 サムプリント、またはサブジェクト名を指定できます。
+`build-windows.ps1 -Sign` は配置後の `mdv.exe` に署名し、
+`package-windows-inno.ps1 -Sign` はペイロードの `mdv.exe`、インストーラー、
+アンインストーラーに署名します。任意の環境変数:
+`CODESIGN_CERT_PASSWORD`(証明書ファイルのパスワード)、
+`CODESIGN_TIMESTAMP_URL`(RFC 3161 サーバー、既定は
+`http://timestamp.digicert.com`)、`CODESIGN_DIGEST`(既定は `sha256`)、
+`CODESIGN_CSP` と `CODESIGN_KEY_CONTAINER`(ハードウェアトークン用)、
+`SIGNTOOL`(`signtool.exe` のパス。`-SignToolPath` でも指定可)。

@@ -9,10 +9,15 @@ param(
     [string]$Publisher = "fukuyori",
     [switch]$Build,
     [switch]$SkipBuild,
-    [switch]$GenerateOnly
+    [switch]$GenerateOnly,
+    [switch]$Sign,
+    [string]$SignToolPath,
+    [string]$TimestampUrl
 )
 
 $ErrorActionPreference = "Stop"
+
+. (Join-Path (Split-Path -Parent $PSCommandPath) "windows-codesign.ps1")
 
 function Resolve-RootDir {
     $scriptDir = Split-Path -Parent $PSCommandPath
@@ -76,6 +81,11 @@ function Find-InnoCompiler {
 }
 
 $rootDir = Resolve-RootDir
+$signSettings = $null
+if ($Sign) {
+    $signSettings = Get-CodeSignSettings -SignToolPath $SignToolPath -TimestampUrl $TimestampUrl
+    Write-CodeSignSummary $signSettings
+}
 $deployPath = [System.IO.Path]::GetFullPath((Join-Path $rootDir $DeployDir))
 $workPath = [System.IO.Path]::GetFullPath((Join-Path $rootDir $WorkDir))
 $outputPath = [System.IO.Path]::GetFullPath((Join-Path $rootDir $OutputDir))
@@ -91,6 +101,15 @@ if ($Build -and -not $SkipBuild) {
     }
     if ($QtDir) {
         $buildArgs.QtDir = $QtDir
+    }
+    if ($Sign) {
+        $buildArgs.Sign = $true
+        if ($SignToolPath) {
+            $buildArgs.SignToolPath = $SignToolPath
+        }
+        if ($TimestampUrl) {
+            $buildArgs.TimestampUrl = $TimestampUrl
+        }
     }
     & $buildScript @buildArgs
 }
@@ -116,6 +135,13 @@ $payloadLiteral = ConvertTo-InnoLiteral $deployPath
 $outputLiteral = ConvertTo-InnoLiteral $outputPath
 $publisherLiteral = ConvertTo-InnoLiteral $Publisher
 $iconLiteral = ConvertTo-InnoLiteral $icon
+$signDirectives = ""
+if ($signSettings) {
+    $signDirectives = @"
+SignTool=mdvsign
+SignedUninstaller=yes
+"@
+}
 
 $iss = @"
 #define MyAppName "mdv"
@@ -141,6 +167,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\mdv.exe
 SetupIconFile={#IconFile}
+$signDirectives
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -165,6 +192,9 @@ Write-Host "Generated: $issPath"
 
 if ($GenerateOnly) {
     Write-Host "Skipped Inno Setup compile because -GenerateOnly was specified."
+    if ($signSettings) {
+        Write-Host "Compile it with: ISCC.exe `"/Smdvsign=$(Get-InnoSignToolCommand $signSettings)`" `"$issPath`""
+    }
     return
 }
 
@@ -173,6 +203,19 @@ if (-not $iscc) {
     throw "ISCC.exe was not found. Install Inno Setup 6, set ISCC, pass -InnoSetupCompiler, or use -GenerateOnly."
 }
 
+if ($signSettings) {
+    Invoke-CodeSign $signSettings @((Join-Path $deployPath "mdv.exe"))
+}
+
+$isccArgs = @()
+if ($signSettings) {
+    $isccArgs += "/Smdvsign=$(Get-InnoSignToolCommand $signSettings)"
+}
+$isccArgs += $issPath
+
 Write-Host "Compiling installer with Inno Setup"
-& $iscc $issPath
+& $iscc @isccArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "Inno Setup failed with exit code $LASTEXITCODE."
+}
 Write-Host "Installer output: $(Join-Path $outputPath "mdv-$version-windows-x64.exe")"

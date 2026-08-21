@@ -5,10 +5,15 @@ param(
     [string]$QtDir,
     [string]$CMake,
     [string]$Generator,
-    [switch]$NoDeploy
+    [switch]$NoDeploy,
+    [switch]$Sign,
+    [string]$SignToolPath,
+    [string]$TimestampUrl
 )
 
 $ErrorActionPreference = "Stop"
+
+. (Join-Path (Split-Path -Parent $PSCommandPath) "windows-codesign.ps1")
 
 function Resolve-RootDir {
     $scriptDir = Split-Path -Parent $PSCommandPath
@@ -199,6 +204,11 @@ function Get-BuiltExecutable {
 }
 
 $rootDir = Resolve-RootDir
+$signSettings = $null
+if ($Sign) {
+    $signSettings = Get-CodeSignSettings -SignToolPath $SignToolPath -TimestampUrl $TimestampUrl
+    Write-CodeSignSummary $signSettings
+}
 $buildPath = [System.IO.Path]::GetFullPath((Join-Path $rootDir $BuildDir))
 $deployPath = [System.IO.Path]::GetFullPath((Join-Path $rootDir $DeployDir))
 $qtPrefix = Find-QtPrefix $QtDir
@@ -281,5 +291,12 @@ if (-not $NoDeploy) {
 
     Write-Host "Deploying Qt runtime"
     & $windeployqt --release --compiler-runtime $deployedExe
+
+    if ($signSettings) {
+        Invoke-CodeSign $signSettings @($deployedExe)
+    }
+
     Write-Host "Deployed: $deployPath"
+} elseif ($signSettings) {
+    Invoke-CodeSign $signSettings @($exePath)
 }

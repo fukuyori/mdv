@@ -276,3 +276,24 @@ existing payload under `dist\mdv-windows-x64`, generates
 Run `.\scripts\build-windows.ps1` first, or pass `-Build` when you explicitly
 want packaging to rebuild the payload. Use `-GenerateOnly` to generate the
 `.iss` file without invoking Inno Setup.
+
+Authenticode signing on Windows:
+
+```powershell
+$env:CODESIGN_CERT = "C:\path\to\cert.pfx"
+$env:CODESIGN_CERT_PASSWORD = "..."
+.\scripts\build-windows.ps1 -Sign
+.\scripts\package-windows-inno.ps1 -Sign
+```
+
+Both scripts take `-Sign` and read the certificate from the `CODESIGN_CERT`
+environment variable, which accepts a `.pfx` path, a certificate SHA1
+thumbprint, or a certificate subject name from the Windows certificate store.
+`build-windows.ps1 -Sign` signs the deployed `mdv.exe`;
+`package-windows-inno.ps1 -Sign` signs the payload `mdv.exe`, the installer,
+and the uninstaller. Optional environment variables:
+`CODESIGN_CERT_PASSWORD` (certificate file password),
+`CODESIGN_TIMESTAMP_URL` (RFC 3161 server, default
+`http://timestamp.digicert.com`), `CODESIGN_DIGEST` (default `sha256`),
+`CODESIGN_CSP` and `CODESIGN_KEY_CONTAINER` (hardware tokens), and `SIGNTOOL`
+(explicit `signtool.exe` path, also settable with `-SignToolPath`).
