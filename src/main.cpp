@@ -53,6 +53,7 @@
 #include <QPropertyAnimation>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QLockFile>
 #include <QSaveFile>
 #include <QScrollBar>
 #include <QSet>
@@ -1948,6 +1949,9 @@ public:
         if (key == "saveMarkdown") return ja ? "Markdown を保存" : "Save Markdown";
         if (key == "openFailed") return ja ? "開けませんでした" : "Open failed";
         if (key == "saveFailed") return ja ? "保存できませんでした" : "Save failed";
+        if (key == "saveLockedText") return ja
+            ? "このファイルは別のmdvで保存中のため、今は保存できません。しばらくしてからやり直してください。"
+            : "Another mdv instance is currently saving this file. Try again in a moment.";
         if (key == "fileMissing") return ja ? "ファイルが見つかりません:\n%1" : "The file no longer exists:\n%1";
         if (key == "opened") return ja ? "開きました: %1" : "Opened %1";
         if (key == "codexLogTitle") return ja ? "Codex 会話ログ" : "Codex conversation log";
@@ -4482,14 +4486,9 @@ bool DocumentTab::writeFile(const QString &path)
     }
     const bool overwritesCurrentFile = !currentFile_.isEmpty()
         && QFileInfo(path).absoluteFilePath() == QFileInfo(currentFile_).absoluteFilePath();
-    if (overwritesCurrentFile && backingFileChanged(path)) {
-        const auto answer = QMessageBox::warning(
-            window_, window_->uiText("externalChangeTitle"), window_->uiText("saveConflictText"),
-            QMessageBox::Save | QMessageBox::Cancel, QMessageBox::Cancel);
-        if (answer != QMessageBox::Save) {
-            return false;
-        }
-    }
+
+    // Ask about lossy encodings before looking at the file on disk, so no
+    // modal dialog sits between the conflict check and the actual write.
     if (encodingLossy_) {
         const auto answer = QMessageBox::warning(
             window_,
@@ -4503,26 +4502,69 @@ bool DocumentTab::writeFile(const QString &path)
         encodingLossy_ = false;
     }
 
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::warning(window_, window_->uiText("saveFailed"), file.errorString());
+    // Serialise check-and-replace against other mdv instances with an
+    // advisory lock next to the target. The lock is only skipped when the
+    // directory refuses to create it, in which case QSaveFile fails the
+    // same way and reports the real error below.
+    QLockFile lock(path + QStringLiteral(".mdv-lock"));
+    lock.setStaleLockTime(30 * 1000);
+    if (!lock.tryLock(2000) && lock.error() == QLockFile::LockFailedError) {
+        QMessageBox::warning(window_, window_->uiText("saveFailed"), window_->uiText("saveLockedText"));
         return false;
     }
 
-    QTextStream out(&file);
-    if (fileEncoding_ != QStringConverter::Utf8) {
-        out.setEncoding(fileEncoding_);
-        out.setGenerateByteOrderMark(true);
-    }
-    out << editor_->toPlainText();
+    bool overwriteConfirmed = false;
+    bool saved = false;
+    const QString content = editor_->toPlainText();
+    for (int attempt = 0; attempt < 3 && !saved; ++attempt) {
+        if (overwritesCurrentFile && !overwriteConfirmed && backingFileChanged(path)) {
+            const auto answer = QMessageBox::warning(
+                window_, window_->uiText("externalChangeTitle"), window_->uiText("saveConflictText"),
+                QMessageBox::Save | QMessageBox::Cancel, QMessageBox::Cancel);
+            if (answer != QMessageBox::Save) {
+                return false;
+            }
+            overwriteConfirmed = true;
+        }
 
-    // Our own write replaces the file on disk (QSaveFile writes a temp file
-    // and renames it over the target); ignore the resulting fileChanged
-    // signal instead of mistaking it for an external edit.
-    suppressNextExternalChange_ = true;
-    if (!file.commit()) {
-        suppressNextExternalChange_ = false;
-        QMessageBox::warning(window_, window_->uiText("saveFailed"), file.errorString());
+        QSaveFile file(path);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            QMessageBox::warning(window_, window_->uiText("saveFailed"), file.errorString());
+            return false;
+        }
+
+        QTextStream out(&file);
+        if (fileEncoding_ != QStringConverter::Utf8) {
+            out.setEncoding(fileEncoding_);
+            out.setGenerateByteOrderMark(true);
+        }
+        out << content;
+        out.flush();
+
+        // Re-verify the target immediately before the rename. The temp file
+        // is already written, so this closes the window between the earlier
+        // check and commit() to the rename itself; an external write that
+        // landed in between is handled by asking on the next iteration.
+        if (overwritesCurrentFile && !overwriteConfirmed && backingFileChanged(path)) {
+            file.cancelWriting();
+            continue;
+        }
+
+        // Our own write replaces the file on disk (QSaveFile writes a temp
+        // file and renames it over the target); ignore the resulting
+        // fileChanged signal instead of mistaking it for an external edit.
+        suppressNextExternalChange_ = true;
+        if (!file.commit()) {
+            suppressNextExternalChange_ = false;
+            QMessageBox::warning(window_, window_->uiText("saveFailed"), file.errorString());
+            return false;
+        }
+        saved = true;
+    }
+    if (!saved) {
+        // The file kept changing underneath us; the last iteration's
+        // dialog was answered but the disk moved again. Give up cleanly.
+        QMessageBox::warning(window_, window_->uiText("saveFailed"), window_->uiText("saveConflictText"));
         return false;
     }
 

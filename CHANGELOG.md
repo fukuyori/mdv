@@ -21,6 +21,12 @@ English | [日本語](CHANGELOG.ja.md)
 - The QWebChannel bridge validates its arguments: scroll positions must be
   finite values in range, and copied text is limited to 1 MiB, so page-side
   state cannot drive unbounded work on the Qt side.
+- Saving now holds an advisory `QLockFile` (`<file>.mdv-lock`) across the
+  external-change check, the temporary write, and the rename, and re-verifies
+  the on-disk SHA-256 immediately before `commit()`. The lossy-encoding prompt
+  was moved ahead of the conflict check so no dialog sits inside that window.
+  A file that changes underneath the save is reported instead of silently
+  overwritten; a lock held by another mdv instance is reported as well.
 
 ## [0.6.3] - 2026-08-29
 
