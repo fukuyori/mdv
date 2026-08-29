@@ -1,4 +1,5 @@
 #include <cmath>
+#include <utility>
 
 #include <QtGlobal>
 
@@ -860,8 +861,26 @@ public:
 
     void requestTranslation(const QString &key, const QString &markdown, bool urgent = false)
     {
+        // Bound the work a single document can enqueue: one oversized block
+        // is skipped, and a document with more text than the queue budget
+        // has its remaining blocks reported as failed rather than buffered
+        // without limit. Failures are delivered asynchronously so callers
+        // see the same ordering as for a server-side error.
+        const auto rejectLater = [this, key](const QString &reason) {
+            QTimer::singleShot(0, this, [this, key, reason] { emit blockFailed(key, reason); });
+        };
+        if (markdown.size() > maxInputCharacters_) {
+            rejectLater(QStringLiteral("block exceeds %1 KiB limit").arg(maxInputCharacters_ / 1024));
+            return;
+        }
+        if (queue_.size() >= maxQueuedJobs_ || queuedCharacters_ + markdown.size() > maxQueuedCharacters_) {
+            rejectLater(QStringLiteral("translation queue is full"));
+            return;
+        }
+
         // Snapshot all routing information with the text. A settings change
         // must not redirect already queued document contents elsewhere.
+        queuedCharacters_ += markdown.size();
         queue_.append({key, markdown, endpoint_, model_, targetLanguage_, urgent});
         if (urgent) {
             std::stable_partition(queue_.begin(), queue_.end(),
@@ -893,6 +912,7 @@ public:
     void cancelAll()
     {
         queue_.clear();
+        queuedCharacters_ = 0;
         const QList<QNetworkReply *> active = active_.values();
         for (QNetworkReply *reply : active) {
             cancelled_.insert(reply);
@@ -910,6 +930,7 @@ public:
 
         queue_.erase(std::remove_if(queue_.begin(), queue_.end(),
             [&keys](const Job &job) { return keys.contains(job.key); }), queue_.end());
+        recountQueuedCharacters();
 
         for (auto it = activeKeys_.constBegin(); it != activeKeys_.constEnd(); ++it) {
             if (keys.contains(it.value())) {
@@ -934,10 +955,20 @@ private:
         bool urgent = false;
     };
 
+    void recountQueuedCharacters()
+    {
+        queuedCharacters_ = 0;
+        for (const Job &job : std::as_const(queue_)) {
+            queuedCharacters_ += job.text.size();
+        }
+    }
+
     void fillSlots()
     {
         while (active_.size() < maxInFlight_ && !queue_.isEmpty()) {
-            sendOne(queue_.takeFirst());
+            const Job job = queue_.takeFirst();
+            queuedCharacters_ -= job.text.size();
+            sendOne(job);
         }
     }
 
@@ -945,6 +976,10 @@ private:
     {
         QNetworkRequest request(QUrl(job.endpoint + "/api/chat"));
         request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        // The endpoint was validated (and, for plain HTTP off-host, confirmed)
+        // when it was configured. A redirect would send the document text to
+        // a host that never went through that check, so never follow one.
+        request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
 
         const QJsonObject payload{
             {"model", job.model},
@@ -988,6 +1023,12 @@ private:
             }
 
             const QByteArray body = reply->readAll();
+            const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            if (reply->error() == QNetworkReply::NoError && (httpStatus < 200 || httpStatus >= 300)) {
+                emit blockFailed(job.key, QStringLiteral("unexpected HTTP status %1 (redirects are not followed)").arg(httpStatus));
+                fillSlots();
+                return;
+            }
             if (reply->error() != QNetworkReply::NoError) {
                 if (isFatal(reply->error())) {
                     // Server unreachable: nothing else will succeed either.
@@ -1044,6 +1085,10 @@ private:
     }
 
     static constexpr qint64 maxResponseBytes_ = 8 * 1024 * 1024;
+    static constexpr qsizetype maxInputCharacters_ = 256 * 1024;
+    static constexpr qsizetype maxQueuedJobs_ = 8192;
+    static constexpr qsizetype maxQueuedCharacters_ = 32 * 1024 * 1024;
+    qsizetype queuedCharacters_ = 0;
     QNetworkAccessManager *manager_ = nullptr;
     QSet<QNetworkReply *> active_;
     QHash<QNetworkReply *, QString> activeKeys_;
@@ -2285,7 +2330,9 @@ public:
             if (!isValidTranslationEndpoint(base)) {
                 return;
             }
-            QNetworkReply *reply = manager->get(QNetworkRequest(QUrl(base + "/api/tags")));
+            QNetworkRequest tagsRequest(QUrl(base + "/api/tags"));
+            tagsRequest.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
+            QNetworkReply *reply = manager->get(tagsRequest);
             constexpr qint64 maxModelListBytes = 2 * 1024 * 1024;
             reply->setReadBufferSize(maxModelListBytes + 1);
             const auto abortOversized = [reply, maxModelListBytes] {

@@ -37,6 +37,13 @@ English | [日本語](CHANGELOG.ja.md)
   every received path must be absolute and clean. Second launches now
   resolve relative arguments against their own working directory before
   hand-off, fixing files opening relative to the wrong directory.
+- Translation requests are bounded on the sending side too: a single block
+  is limited to 256 KiB of text, the shared queue to 8192 jobs / 32 MiB, and
+  anything beyond that is reported as a failed block instead of buffered.
+  Neither the translation request nor the model-list fetch follows HTTP
+  redirects any more, so document text can only reach the endpoint that was
+  validated (and, for plain HTTP off-host, confirmed) in the settings; a
+  3xx answer is reported as a failed block.
 
 ## [0.6.3] - 2026-08-29
 
