@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 English | [日本語](CHANGELOG.ja.md)
 
+## [Unreleased]
+
+### Added
+
+- Follow mode (`-f`) opens files read-only with the editor pane hidden,
+  automatically reloads changes, and keeps the last line at the bottom of
+  the preview without risking overwrites from save actions. It reads appended
+  bytes incrementally and bounds the displayed tail to 10,000 lines and 8 MiB.
+
 ## [0.5.3] - 2026-08-06
 
 ### Added

@@ -40,6 +40,8 @@ Viewer mode (`-v`), with the editor pane hidden:
   onto another mdv window moves it there instead
 - Detects when a tab's file changes on disk (edited by another program) and
   offers to reload it
+- Follow mode (`-f`) automatically reloads files as they grow and keeps the
+  preview pinned to the last line, with the editor pane hidden
 - Encoding safety: files are read as UTF-8 (UTF-16/32 with BOM are detected
   and preserved on save), and a warning is shown before opening or saving a
   file that did not decode cleanly
@@ -162,6 +164,22 @@ open build/mdv.app --args -v   # macOS
 
 In viewer mode, use the slim toggle on the left edge of the preview to show
 the editor pane again.
+
+Follow a file like `tail -f`, automatically reloading it and keeping its last
+line at the bottom of the preview:
+
+```sh
+open build/mdv.app --args -f log.md   # macOS
+./build/mdv -f log.md                 # other platforms
+```
+
+Follow mode is read-only: it keeps the editor pane hidden and disables save
+and editing actions so an external writer cannot be overwritten. Additional
+files opened in the same follow-mode window are followed in the same way.
+Only newly appended bytes are read after the initial load. The displayed tail
+is bounded to the last 10,000 lines and at most 8 MiB of source data, so memory
+use does not grow with the file; truncation, in-place overwrite, and file
+replacement/rotation rebuild the bounded tail from the new file.
 
 The Open and Save As dialogs start in the current working directory (home
 when the app is launched from Finder) and then follow the directory you

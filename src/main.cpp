@@ -255,6 +255,22 @@ static QString defaultPreviewFontFamily()
     return QApplication::font().family();
 }
 
+static int encodingCodeUnitSize(QStringConverter::Encoding encoding)
+{
+    switch (encoding) {
+    case QStringConverter::Utf16:
+    case QStringConverter::Utf16LE:
+    case QStringConverter::Utf16BE:
+        return 2;
+    case QStringConverter::Utf32:
+    case QStringConverter::Utf32LE:
+    case QStringConverter::Utf32BE:
+        return 4;
+    default:
+        return 1;
+    }
+}
+
 // The working directory is the natural starting point when launched from
 // a terminal; Finder-launched apps run with cwd "/", where home is nicer.
 static QString defaultDialogDir()
@@ -356,6 +372,7 @@ static QString previewScript()
         "var __mdvBridge = null;"
         "var __mdvProgTs = 0;"
         "var __mdvRenderGeneration = 0;"
+        "var __mdvFollowTail = false;"
         "new QWebChannel(qt.webChannelTransport, function(channel) {"
         "  __mdvBridge = channel.objects.mdv;"
         "});"
@@ -369,6 +386,14 @@ static QString previewScript()
         "    ys.push(hs[i].getBoundingClientRect().top + window.scrollY);"
         "  ys.push(document.documentElement.scrollHeight);"
         "  return ys;"
+        "}"
+        "function __mdvScrollToBottom() {"
+        "  __mdvProgTs = Date.now();"
+        "  window.scrollTo(0, document.documentElement.scrollHeight);"
+        "}"
+        "function __mdvSetFollowTail(enabled) {"
+        "  __mdvFollowTail = enabled;"
+        "  if (enabled) requestAnimationFrame(__mdvScrollToBottom);"
         "}"
         "function __mdvJumpToHeading(index, count, title, occurrence) {"
         "  var hs = __mdvHeadings();"
@@ -555,6 +580,7 @@ static QString previewScript()
         "    used[id] = 1;"
         "    hs[i].id = id;"
         "  }"
+        "  if (__mdvFollowTail) requestAnimationFrame(__mdvScrollToBottom);"
         "}"
         "function __mdvSync(count, segment, t, fraction) {"
         "  var hs = __mdvHeadings();"
@@ -594,7 +620,10 @@ static QString previewScript()
         "    }"
         "    __mdvBridge.previewScrolled(hs.length, segment, t, sy / total);"
         "  });"
-        "}, {passive: true});");
+        "}, {passive: true});"
+        "new ResizeObserver(function() {"
+        "  if (__mdvFollowTail) __mdvScrollToBottom();"
+        "}).observe(document.getElementById('content'));");
 }
 
 // JS-to-C++ channel: the preview page reports user scrolls through this
@@ -1248,7 +1277,8 @@ public:
         updatePreview();
     }
 
-    bool loadFile(const QString &path);
+    bool loadFile(const QString &path, bool followMode = false);
+    bool isFollowMode() const { return followMode_; }
     bool saveFile();
     bool saveFileAs();
     bool writeFile(const QString &path);
@@ -1326,6 +1356,12 @@ public:
     void syncEditorToPreview(int headingCount, int segment, double t, double fraction);
 
 private:
+    bool loadFileImpl(const QString &path, bool followMode, bool quiet);
+    bool loadFollowSnapshot(const QString &path, bool quiet);
+    bool applyFollowBuffer(const QString &path, bool quiet);
+    QString decodedFollowBuffer(bool *lossy) const;
+    void trimFollowRawBuffer();
+    void reloadFollowedFile();
     bool pasteImageFromClipboard(const QMimeData *mimeData);
     bool pasteImageFileFromClipboard(const QMimeData *mimeData);
 
@@ -1425,6 +1461,8 @@ private:
     QSplitter *splitter_ = nullptr;
     QTimer *previewUpdateTimer_ = nullptr;
     QTimer *translationPriorityTimer_ = nullptr;
+    QTimer *followPollTimer_ = nullptr;
+    QTimer *followReloadTimer_ = nullptr;
     QString pendingPreviewHtml_;
     QUrl loadedPreviewBaseUrl_;
     bool previewLoaded_ = false;
@@ -1436,6 +1474,18 @@ private:
     bool encodingLossy_ = false;
     bool documentModified_ = false;
     bool syncingEditorFromPreview_ = false;
+    bool followMode_ = false;
+    QByteArray followRawBuffer_;
+    QByteArray followBoundarySignature_;
+    qint64 followBufferStartOffset_ = 0;
+    qint64 followReadOffset_ = 0;
+    QDateTime followLoadedModified_;
+    QDateTime followFileBirthTime_;
+    bool followNeedsReset_ = false;
+
+    static constexpr qint64 followMaxBufferBytes_ = 8 * 1024 * 1024;
+    static constexpr qsizetype followMaxLines_ = 10000;
+    static constexpr qsizetype followSignatureBytes_ = 64;
 
     QFileSystemWatcher *fileWatcher_ = nullptr;
     bool pendingExternalChange_ = false;
@@ -1479,12 +1529,13 @@ public:
         return nullptr;
     }
 
-    explicit MainWindow(bool startWithEditorHidden = false)
+    explicit MainWindow(bool startWithEditorHidden = false, bool followMode = false)
+        : followMode_(followMode)
     {
         allWindows().append(this);
 
         loadViewSettings();
-        if (startWithEditorHidden) {
+        if (startWithEditorHidden || followMode_) {
             editorVisible_ = false;
         }
 
@@ -1748,8 +1799,12 @@ public:
     QString currentTheme() const { return currentTheme_; }
     int fontSize() const { return fontSize_; }
     bool editorVisible() const { return editorVisible_; }
+    bool followMode() const { return followMode_; }
     void setEditorPaneVisible(bool visible, bool announce)
     {
+        if (followMode_ && visible) {
+            return;
+        }
         if (editorVisible_ == visible) {
             applyPaneVisibility(false);
             return;
@@ -1832,13 +1887,14 @@ public:
         refreshTabLabel(tab);
         if (tab == activeTab()) {
             updateWindowTitle();
+            updateEditActions();
         }
     }
 
     void onEditorCopyAvailable(DocumentTab *tab, bool available)
     {
         if (tab == activeTab()) {
-            cutAction_->setEnabled(available);
+            cutAction_->setEnabled(available && !followMode_ && !tab->isFollowMode());
             copyAction_->setEnabled(available);
         }
     }
@@ -1846,14 +1902,14 @@ public:
     void onEditorUndoAvailable(DocumentTab *tab, bool available)
     {
         if (tab == activeTab()) {
-            undoAction_->setEnabled(available);
+            undoAction_->setEnabled(available && !followMode_ && !tab->isFollowMode());
         }
     }
 
     void onEditorRedoAvailable(DocumentTab *tab, bool available)
     {
         if (tab == activeTab()) {
-            redoAction_->setEnabled(available);
+            redoAction_->setEnabled(available && !followMode_ && !tab->isFollowMode());
         }
     }
 
@@ -2390,7 +2446,7 @@ private:
         if (tabWidget_->count() == 1) {
             auto *only = qobject_cast<DocumentTab *>(tabWidget_->widget(0));
             if (only != nullptr && only->isPristineUntitled()) {
-                if (only->loadFile(path)) {
+                if (only->loadFile(path, followMode_)) {
                     refreshTabLabel(only);
                 }
                 return;
@@ -2400,7 +2456,7 @@ private:
         auto *tab = new DocumentTab(this);
         tabWidget_->addTab(tab, QString());
         tabWidget_->setCurrentWidget(tab);
-        if (!tab->loadFile(path)) {
+        if (!tab->loadFile(path, followMode_)) {
             const int index = tabWidget_->indexOf(tab);
             if (index >= 0) {
                 tabWidget_->removeTab(index);
@@ -2524,7 +2580,7 @@ private:
             return;
         }
 
-        auto *newWindow = new MainWindow();
+        auto *newWindow = new MainWindow(tab->isFollowMode(), tab->isFollowMode());
         newWindow->setAttribute(Qt::WA_DeleteOnClose);
 
         // Reparent while the tab is still one of ours, so any in-flight
@@ -2658,12 +2714,17 @@ private:
             return;
         }
 
-        undoAction_->setEnabled(tab->editor()->document()->isUndoAvailable());
-        redoAction_->setEnabled(tab->editor()->document()->isRedoAvailable());
+        const bool readOnly = followMode_ || tab->isFollowMode();
+        saveAction_->setEnabled(!readOnly);
+        saveAsAction_->setEnabled(!readOnly);
+        undoAction_->setEnabled(!readOnly && tab->editor()->document()->isUndoAvailable());
+        redoAction_->setEnabled(!readOnly && tab->editor()->document()->isRedoAvailable());
 
         const bool hasSelection = tab->editor()->textCursor().hasSelection();
-        cutAction_->setEnabled(hasSelection);
+        cutAction_->setEnabled(!readOnly && hasSelection);
         copyAction_->setEnabled(hasSelection);
+        pasteAction_->setEnabled(!readOnly);
+        replaceAction_->setEnabled(!readOnly);
     }
 
     // --- Find / Replace (always targets the active tab) ------------------
@@ -2940,6 +3001,7 @@ private:
         englishLanguageAction_->setChecked(currentLanguage_ == "en");
         japaneseLanguageAction_->setChecked(currentLanguage_ == "ja");
         toggleEditorAction_->setChecked(editorVisible_);
+        toggleEditorAction_->setEnabled(!followMode_);
         decreaseFontSizeAction_->setEnabled(fontSize_ > minFontSize_);
         increaseFontSizeAction_->setEnabled(fontSize_ < maxFontSize_);
     }
@@ -3111,6 +3173,7 @@ private:
     int fontSize_ = defaultFontSize_;
     int ollamaParallel_ = 2;
     bool editorVisible_ = true;
+    bool followMode_ = false;
     int untitledCounter_ = 1;
 
     QAction *newAction_ = nullptr;
@@ -3197,7 +3260,11 @@ DocumentTab::DocumentTab(MainWindow *window, QWidget *parent)
         }
     };
     bridge->onExtensionsRendered = [this] {
-        syncPreviewToEditor();
+        if (followMode_) {
+            preview_->page()->runJavaScript(QStringLiteral("__mdvScrollToBottom();"));
+        } else {
+            syncPreviewToEditor();
+        }
     };
     auto *channel = new QWebChannel(preview_->page());
     channel->registerObject(QStringLiteral("mdv"), bridge);
@@ -3221,6 +3288,41 @@ DocumentTab::DocumentTab(MainWindow *window, QWidget *parent)
     fileWatcher_ = new QFileSystemWatcher(this);
     connect(fileWatcher_, &QFileSystemWatcher::fileChanged, this, [this](const QString &path) {
         onFileChangedOnDisk(path);
+    });
+
+    followReloadTimer_ = new QTimer(this);
+    followReloadTimer_->setSingleShot(true);
+    followReloadTimer_->setInterval(80);
+    connect(followReloadTimer_, &QTimer::timeout, this, &DocumentTab::reloadFollowedFile);
+
+    // QFileSystemWatcher provides prompt notification for ordinary appends.
+    // Polling as a backstop also catches rapid coalesced changes and files
+    // replaced by rename, which removes an inotify watch from the old inode.
+    followPollTimer_ = new QTimer(this);
+    followPollTimer_->setInterval(250);
+    connect(followPollTimer_, &QTimer::timeout, this, [this] {
+        if (!followMode_ || currentFile_.isEmpty()) {
+            return;
+        }
+        const QFileInfo info(currentFile_);
+        if (!info.exists() || !info.isFile()) {
+            return;
+        }
+        if (!fileWatcher_->files().contains(currentFile_)) {
+            fileWatcher_->addPath(currentFile_);
+        }
+        const bool identityChanged = followFileBirthTime_.isValid()
+            && info.birthTime().isValid() && info.birthTime() != followFileBirthTime_;
+        if (identityChanged || info.size() < followReadOffset_
+            || (info.size() == followReadOffset_
+                && info.lastModified() != followLoadedModified_)) {
+            followNeedsReset_ = true;
+        }
+        if (followNeedsReset_ || info.size() != followReadOffset_) {
+            if (!followReloadTimer_->isActive()) {
+                followReloadTimer_->start();
+            }
+        }
     });
 
     auto *previewContainer = new QWidget(this);
@@ -3458,12 +3560,14 @@ void DocumentTab::applyFontsAndTheme()
 
 void DocumentTab::applyPaneVisibility()
 {
-    toggleEditorButton_->setChecked(window_->editorVisible());
-    toggleEditorButton_->setText(window_->editorVisible() ? QStringLiteral("<") : QStringLiteral(">"));
-    toggleEditorButton_->setToolTip(window_->uiText(window_->editorVisible() ? "hideEditorPane" : "showEditorPane"));
-    editor_->setVisible(window_->editorVisible());
+    const bool editorVisible = window_->editorVisible() && !followMode_;
+    toggleEditorButton_->setChecked(editorVisible);
+    toggleEditorButton_->setText(editorVisible ? QStringLiteral("<") : QStringLiteral(">"));
+    toggleEditorButton_->setToolTip(window_->uiText(editorVisible ? "hideEditorPane" : "showEditorPane"));
+    toggleEditorButton_->setEnabled(!followMode_ && !window_->followMode());
+    editor_->setVisible(editorVisible);
 
-    if (window_->editorVisible()) {
+    if (editorVisible) {
         splitter_->setSizes({220, 440, 440});
         if (isActive()) {
             editor_->setFocus();
@@ -3482,13 +3586,23 @@ void DocumentTab::updateUiTexts()
     originalModeButton_->setText(window_->uiText("trOriginal"));
     bilingualModeButton_->setText(window_->uiText("trBilingual"));
     translatedModeButton_->setText(window_->uiText("trTranslated"));
-    toggleEditorButton_->setToolTip(window_->uiText(window_->editorVisible() ? "hideEditorPane" : "showEditorPane"));
+    const bool editorVisible = window_->editorVisible() && !followMode_;
+    toggleEditorButton_->setToolTip(window_->uiText(editorVisible ? "hideEditorPane" : "showEditorPane"));
 }
 
-bool DocumentTab::loadFile(const QString &path)
+bool DocumentTab::loadFile(const QString &path, bool followMode)
 {
+    return loadFileImpl(path, followMode, false);
+}
+
+bool DocumentTab::loadFileImpl(const QString &path, bool followMode, bool quiet)
+{
+    if (followMode) {
+        return loadFollowSnapshot(path, quiet);
+    }
+
     const QFileInfo info(path);
-    if (info.size() > window_->largeFileWarningBytes()) {
+    if (!quiet && info.size() > window_->largeFileWarningBytes()) {
         const auto answer = QMessageBox::question(
             window_,
             window_->uiText("largeFileTitle"),
@@ -3502,7 +3616,9 @@ bool DocumentTab::loadFile(const QString &path)
 
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
-        QMessageBox::warning(window_, window_->uiText("openFailed"), file.errorString());
+        if (!quiet) {
+            QMessageBox::warning(window_, window_->uiText("openFailed"), file.errorString());
+        }
         return false;
     }
 
@@ -3516,7 +3632,7 @@ bool DocumentTab::loadFile(const QString &path)
     QString text = decoder(data);
     const bool lossy = decoder.hasError();
 
-    if (lossy) {
+    if (lossy && !quiet) {
         const auto answer = QMessageBox::warning(
             window_,
             window_->uiText("encodingTitle"),
@@ -3533,21 +3649,257 @@ bool DocumentTab::loadFile(const QString &path)
 
     editor_->setPlainText(text);
     currentFile_ = path;
-    window_->setLastDialogDir(info.absolutePath());
+    followMode_ = false;
+    editor_->setReadOnly(false);
+    followPollTimer_->stop();
+    followReloadTimer_->stop();
+    followRawBuffer_.clear();
+    followBoundarySignature_.clear();
+    followBufferStartOffset_ = 0;
+    followReadOffset_ = 0;
+    followLoadedModified_ = {};
+    followFileBirthTime_ = {};
+    followNeedsReset_ = false;
+    if (!quiet) {
+        window_->setLastDialogDir(info.absolutePath());
+    }
     fileEncoding_ = encoding;
     encodingLossy_ = lossy;
     documentModified_ = false;
     pendingExternalChange_ = false;
     watchCurrentFile();
-    window_->addRecentFile(path);
+    if (!quiet) {
+        window_->addRecentFile(path);
+    }
     updatePreview();
     window_->onTabStateChanged(this);
-    window_->statusBar()->showMessage(window_->uiText("opened").arg(path), 3000);
+    if (!quiet) {
+        window_->statusBar()->showMessage(window_->uiText("opened").arg(path), 3000);
+    }
     return true;
+}
+
+bool DocumentTab::loadFollowSnapshot(const QString &path, bool quiet)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (!quiet) {
+            QMessageBox::warning(window_, window_->uiText("openFailed"), file.errorString());
+        }
+        return false;
+    }
+
+    const qint64 fileSize = file.size();
+    const QByteArray header = file.read(4);
+    fileEncoding_ = QStringConverter::encodingForData(header).value_or(QStringConverter::Utf8);
+
+    qint64 start = qMax<qint64>(0, fileSize - followMaxBufferBytes_);
+    const int unitSize = encodingCodeUnitSize(fileEncoding_);
+    if (start > 0 && unitSize > 1) {
+        start += (unitSize - (start % unitSize)) % unitSize;
+    } else if (start > 0 && fileEncoding_ == QStringConverter::Utf8) {
+        // A tail window may start inside a UTF-8 sequence. Advance to its
+        // next leading byte; the incomplete first text line is discarded
+        // below regardless.
+        file.seek(start);
+        const QByteArray boundary = file.read(4);
+        qsizetype skip = 0;
+        while (skip < boundary.size()
+               && (static_cast<unsigned char>(boundary.at(skip)) & 0xc0) == 0x80) {
+            ++skip;
+        }
+        start += skip;
+    }
+
+    if (!file.seek(start)) {
+        return false;
+    }
+    followRawBuffer_ = file.read(followMaxBufferBytes_);
+    followBufferStartOffset_ = start;
+    followReadOffset_ = start + followRawBuffer_.size();
+    trimFollowRawBuffer();
+    followBoundarySignature_ = followRawBuffer_.right(followSignatureBytes_);
+
+    const QFileInfo loadedInfo(path);
+    followLoadedModified_ = loadedInfo.lastModified();
+    followFileBirthTime_ = loadedInfo.birthTime();
+    followNeedsReset_ = false;
+
+    return applyFollowBuffer(path, quiet);
+}
+
+QString DocumentTab::decodedFollowBuffer(bool *lossy) const
+{
+    QStringDecoder decoder(fileEncoding_);
+    QString text = decoder(followRawBuffer_);
+    *lossy = decoder.hasError();
+
+    // When the byte window does not start at the beginning of the file, its
+    // first line can be only a suffix. Drop it when a complete later line is
+    // available; for a single line larger than the window, retain the suffix
+    // rather than showing an empty preview.
+    if (followBufferStartOffset_ > 0) {
+        const qsizetype newline = text.indexOf(QLatin1Char('\n'));
+        if (newline >= 0) {
+            text = text.mid(newline + 1);
+        }
+    }
+
+    text.replace(QLatin1String("\r\n"), QLatin1String("\n"));
+    text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+
+    const qsizetype lineCount = text.isEmpty()
+        ? 0
+        : text.count(QLatin1Char('\n')) + (text.endsWith(QLatin1Char('\n')) ? 0 : 1);
+    qsizetype linesToDrop = qMax<qsizetype>(0, lineCount - followMaxLines_);
+    qsizetype cut = 0;
+    while (linesToDrop-- > 0) {
+        const qsizetype newline = text.indexOf(QLatin1Char('\n'), cut);
+        if (newline < 0) {
+            break;
+        }
+        cut = newline + 1;
+    }
+    if (cut > 0) {
+        text.remove(0, cut);
+    }
+    return text;
+}
+
+void DocumentTab::trimFollowRawBuffer()
+{
+    if (followRawBuffer_.size() <= followMaxBufferBytes_) {
+        return;
+    }
+
+    qsizetype remove = followRawBuffer_.size() - followMaxBufferBytes_;
+    const int unitSize = encodingCodeUnitSize(fileEncoding_);
+    if (unitSize > 1) {
+        const qint64 newOffset = followBufferStartOffset_ + remove;
+        remove += (unitSize - (newOffset % unitSize)) % unitSize;
+    } else if (fileEncoding_ == QStringConverter::Utf8) {
+        while (remove < followRawBuffer_.size()
+               && (static_cast<unsigned char>(followRawBuffer_.at(remove)) & 0xc0) == 0x80) {
+            ++remove;
+        }
+    }
+
+    followRawBuffer_.remove(0, remove);
+    followBufferStartOffset_ += remove;
+}
+
+bool DocumentTab::applyFollowBuffer(const QString &path, bool quiet)
+{
+    bool lossy = false;
+    const QString text = decodedFollowBuffer(&lossy);
+    if (lossy && !quiet) {
+        const auto answer = QMessageBox::warning(
+            window_,
+            window_->uiText("encodingTitle"),
+            window_->uiText("encodingText"),
+            QMessageBox::Yes | QMessageBox::Cancel,
+            QMessageBox::Cancel);
+        if (answer != QMessageBox::Yes) {
+            return false;
+        }
+    }
+
+    editor_->setPlainText(text);
+    currentFile_ = path;
+    followMode_ = true;
+    editor_->setReadOnly(true);
+    followPollTimer_->start();
+    if (!quiet) {
+        window_->setLastDialogDir(QFileInfo(path).absolutePath());
+    }
+    encodingLossy_ = lossy;
+    documentModified_ = false;
+    pendingExternalChange_ = false;
+    watchCurrentFile();
+    if (!quiet) {
+        window_->addRecentFile(path);
+    }
+    updatePreview();
+    applyPaneVisibility();
+    window_->onTabStateChanged(this);
+    if (!quiet) {
+        window_->statusBar()->showMessage(window_->uiText("opened").arg(path), 3000);
+    }
+    return true;
+}
+
+void DocumentTab::reloadFollowedFile()
+{
+    if (!followMode_ || currentFile_.isEmpty()) {
+        return;
+    }
+
+    const QFileInfo info(currentFile_);
+    if (!info.exists() || !info.isFile()) {
+        return;
+    }
+
+    const bool identityChanged = followFileBirthTime_.isValid()
+        && info.birthTime().isValid() && info.birthTime() != followFileBirthTime_;
+    if (followNeedsReset_ || identityChanged || info.size() < followReadOffset_) {
+        loadFollowSnapshot(currentFile_, true);
+        return;
+    }
+
+    if (info.size() == followReadOffset_) {
+        if (info.lastModified() != followLoadedModified_) {
+            loadFollowSnapshot(currentFile_, true);
+        }
+        return;
+    }
+
+    QFile file(currentFile_);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return;
+    }
+
+    // Verify that the old end of file still exists unchanged. This
+    // distinguishes a real append from an in-place overwrite followed by
+    // growth, even when the file path and birth time stay the same.
+    if (!followBoundarySignature_.isEmpty()) {
+        const qint64 signatureOffset = followReadOffset_ - followBoundarySignature_.size();
+        if (!file.seek(signatureOffset)
+            || file.read(followBoundarySignature_.size()) != followBoundarySignature_) {
+            loadFollowSnapshot(currentFile_, true);
+            return;
+        }
+    }
+
+    const qint64 growth = info.size() - followReadOffset_;
+    if (growth > followMaxBufferBytes_) {
+        loadFollowSnapshot(currentFile_, true);
+        return;
+    }
+    if (!file.seek(followReadOffset_)) {
+        return;
+    }
+    const QByteArray appended = file.read(growth);
+    if (appended.isEmpty()) {
+        return;
+    }
+
+    followRawBuffer_.append(appended);
+    followReadOffset_ += appended.size();
+    trimFollowRawBuffer();
+    followBoundarySignature_ = followRawBuffer_.right(followSignatureBytes_);
+
+    const QFileInfo loadedInfo(currentFile_);
+    followLoadedModified_ = loadedInfo.lastModified();
+    followFileBirthTime_ = loadedInfo.birthTime();
+    followNeedsReset_ = false;
+    applyFollowBuffer(currentFile_, true);
 }
 
 bool DocumentTab::saveFile()
 {
+    if (followMode_) {
+        return false;
+    }
     if (currentFile_.isEmpty()) {
         return saveFileAs();
     }
@@ -3557,6 +3909,9 @@ bool DocumentTab::saveFile()
 
 bool DocumentTab::saveFileAs()
 {
+    if (followMode_) {
+        return false;
+    }
     const QString suggestedName = currentFile_.isEmpty()
         ? QStringLiteral("untitled.md")
         : QFileInfo(currentFile_).fileName();
@@ -3576,6 +3931,9 @@ bool DocumentTab::saveFileAs()
 
 bool DocumentTab::writeFile(const QString &path)
 {
+    if (followMode_) {
+        return false;
+    }
     if (encodingLossy_) {
         const auto answer = QMessageBox::warning(
             window_,
@@ -3658,12 +4016,23 @@ void DocumentTab::onFileChangedOnDisk(const QString &path)
     // Editors that replace-on-save (including our own QSaveFile-based
     // writeFile) can drop the path from the OS watch list; re-add it so
     // future genuine external edits keep being detected.
+    const bool watchWasRemoved = !fileWatcher_->files().contains(path);
     if (QFileInfo::exists(path) && !fileWatcher_->files().contains(path)) {
         fileWatcher_->addPath(path);
     }
 
     if (suppressNextExternalChange_) {
         suppressNextExternalChange_ = false;
+        return;
+    }
+
+    if (followMode_) {
+        if (watchWasRemoved) {
+            followNeedsReset_ = true;
+        }
+        if (!followReloadTimer_->isActive()) {
+            followReloadTimer_->start();
+        }
         return;
     }
 
@@ -3975,7 +4344,10 @@ void DocumentTab::pushPreviewContent()
 {
     const QByteArray json = QJsonDocument(QJsonArray{pendingPreviewHtml_}).toJson(QJsonDocument::Compact);
     preview_->page()->runJavaScript(
-        QStringLiteral("__mdvSetContent(") + QString::fromUtf8(json) + QStringLiteral("[0]);"));
+        QStringLiteral("__mdvSetContent(") + QString::fromUtf8(json)
+        + QStringLiteral("[0]);__mdvSetFollowTail(")
+        + (followMode_ ? QStringLiteral("true") : QStringLiteral("false"))
+        + QStringLiteral(");"));
     syncPreviewToEditor();
 
     // Replacing the content drops Chromium's find highlights.
@@ -4180,7 +4552,7 @@ class SingleInstanceCoordinator : public QObject {
     Q_OBJECT
 
 public:
-    std::function<void(const QStringList &, bool)> onFilesReceived;
+    std::function<void(const QStringList &, bool, bool)> onFilesReceived;
 
     explicit SingleInstanceCoordinator(QObject *parent = nullptr)
         : QObject(parent)
@@ -4197,7 +4569,7 @@ public:
     // already-running instance. Returns true if one accepted the
     // connection, meaning the caller should exit without opening its own
     // window; false means this process should become the running instance.
-    static bool handOffToRunningInstance(const QStringList &paths, bool viewerMode)
+    static bool handOffToRunningInstance(const QStringList &paths, bool viewerMode, bool followMode)
     {
         QLocalSocket socket;
         socket.connectToServer(serverName());
@@ -4207,7 +4579,7 @@ public:
 
         QByteArray payload;
         QDataStream stream(&payload, QIODevice::WriteOnly);
-        stream << paths << viewerMode;
+        stream << paths << viewerMode << followMode;
 
         socket.write(payload);
         socket.waitForBytesWritten(500);
@@ -4229,10 +4601,11 @@ private:
                 QDataStream stream(&payload, QIODevice::ReadOnly);
                 QStringList paths;
                 bool viewerMode = false;
-                stream >> paths >> viewerMode;
+                bool followMode = false;
+                stream >> paths >> viewerMode >> followMode;
 
                 if (onFilesReceived) {
-                    onFilesReceived(paths, viewerMode);
+                    onFilesReceived(paths, viewerMode, followMode);
                 }
                 socket->deleteLater();
             });
@@ -4285,6 +4658,10 @@ int main(int argc, char *argv[])
         QStringList() << "v" << "viewer",
         "Start with the editor pane hidden.");
     parser.addOption(viewerModeOption);
+    QCommandLineOption followModeOption(
+        QStringList() << "f" << "follow",
+        "Follow file changes and keep the preview scrolled to the bottom.");
+    parser.addOption(followModeOption);
     QCommandLineOption versionOption(
         QStringList() << "version",
         "Displays version information.");
@@ -4304,19 +4681,23 @@ int main(int argc, char *argv[])
     // of that instance and quit: tabs can only be dragged between windows
     // in the same process, so a second OS process would be a dead end for
     // that even though it looks like "another mdv window" to the user.
-    if (SingleInstanceCoordinator::handOffToRunningInstance(filesToOpen, parser.isSet(viewerModeOption))) {
+    const bool followMode = parser.isSet(followModeOption);
+    if (SingleInstanceCoordinator::handOffToRunningInstance(
+            filesToOpen, parser.isSet(viewerModeOption), followMode)) {
         return 0;
     }
 
     auto *singleInstance = new SingleInstanceCoordinator(&app);
 
-    MainWindow window(parser.isSet(viewerModeOption));
+    MainWindow window(parser.isSet(viewerModeOption) || followMode, followMode);
     app.fileOpenHandler = [&window](const QString &path) {
         window.openFileFromOsRequest(path);
     };
 
-    singleInstance->onFilesReceived = [&window](const QStringList &paths, bool viewerMode) {
-        auto *newWindow = new MainWindow(viewerMode);
+    singleInstance->onFilesReceived = [&window](
+            const QStringList &paths, bool viewerMode, bool receivedFollowMode) {
+        auto *newWindow = new MainWindow(
+            viewerMode || receivedFollowMode, receivedFollowMode);
         newWindow->setAttribute(Qt::WA_DeleteOnClose);
         for (const QString &path : paths) {
             newWindow->openFileFromCommandLine(path);
