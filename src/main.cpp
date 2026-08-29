@@ -84,7 +84,7 @@
 #include "md4c-html.h"
 
 #ifndef MDV_VERSION
-#define MDV_VERSION "0.5.3"
+#define MDV_VERSION "0.6.0"
 #endif
 
 // ---------------------------------------------------------------------------
