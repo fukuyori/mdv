@@ -84,10 +84,12 @@
 #include <functional>
 
 #include "md4c-html.h"
+#include "antigravity_log.h"
+#include "claude_log.h"
 #include "codex_log.h"
 
 #ifndef MDV_VERSION
-#define MDV_VERSION "0.6.2"
+#define MDV_VERSION "0.6.3"
 #endif
 
 // ---------------------------------------------------------------------------
@@ -1634,6 +1636,8 @@ private:
     bool syncingEditorFromPreview_ = false;
     bool followMode_ = false;
     bool codexEventLogMode_ = false;
+    bool claudeSessionLogMode_ = false;
+    bool antigravitySessionLogMode_ = false;
     bool followOutlineTailPending_ = false;
     QByteArray followRawBuffer_;
     QByteArray followBoundarySignature_;
@@ -1887,6 +1891,8 @@ public:
         if (key == "fileMissing") return ja ? "ファイルが見つかりません:\n%1" : "The file no longer exists:\n%1";
         if (key == "opened") return ja ? "開きました: %1" : "Opened %1";
         if (key == "codexLogTitle") return ja ? "Codex 会話ログ" : "Codex conversation log";
+        if (key == "claudeLogTitle") return ja ? "Claude 会話ログ" : "Claude conversation log";
+        if (key == "antigravityLogTitle") return ja ? "Antigravity 会話ログ" : "Antigravity conversation log";
         if (key == "codexLogUser") return ja ? "ユーザー" : "User";
         if (key == "codexLogAssistant") return ja ? "エージェント" : "Assistant";
         if (key == "codexLogEmpty") return ja
@@ -4072,6 +4078,8 @@ bool DocumentTab::loadFileImpl(const QString &path, bool followMode, bool quiet)
     rememberLoadedFile(path, data);
     followMode_ = false;
     codexEventLogMode_ = false;
+    claudeSessionLogMode_ = false;
+    antigravitySessionLogMode_ = false;
     followOutlineTailPending_ = false;
     resumeFollowShortcut_->setEnabled(false);
     updateTranslationModeUi();
@@ -4142,6 +4150,10 @@ bool DocumentTab::loadFollowSnapshot(const QString &path, bool quiet)
     }
     followRawBuffer_ = file.read(followMaxBufferBytes_);
     codexEventLogMode_ = mdv::isCodexEventLog(path, followRawBuffer_);
+    claudeSessionLogMode_ = !codexEventLogMode_
+        && mdv::isClaudeSessionLog(path, followRawBuffer_);
+    antigravitySessionLogMode_ = !codexEventLogMode_ && !claudeSessionLogMode_
+        && mdv::isAntigravitySessionLog(path, followRawBuffer_);
     followBufferStartOffset_ = start;
     followReadOffset_ = start + followRawBuffer_.size();
     trimFollowRawBuffer();
@@ -4199,6 +4211,20 @@ QString DocumentTab::decodedFollowBuffer(bool *lossy) const
         text = mdv::renderCodexEventLog(
             text,
             window_->uiText("codexLogTitle"),
+            window_->uiText("codexLogUser"),
+            window_->uiText("codexLogAssistant"),
+            window_->uiText("codexLogEmpty"));
+    } else if (claudeSessionLogMode_) {
+        text = mdv::renderClaudeSessionLog(
+            text,
+            window_->uiText("claudeLogTitle"),
+            window_->uiText("codexLogUser"),
+            window_->uiText("codexLogAssistant"),
+            window_->uiText("codexLogEmpty"));
+    } else if (antigravitySessionLogMode_) {
+        text = mdv::renderAntigravitySessionLog(
+            text,
+            window_->uiText("antigravityLogTitle"),
             window_->uiText("codexLogUser"),
             window_->uiText("codexLogAssistant"),
             window_->uiText("codexLogEmpty"));
@@ -5187,6 +5213,10 @@ int main(int argc, char *argv[])
         QStringList() << "f" << "follow",
         "Follow file changes and keep the preview scrolled to the bottom.");
     parser.addOption(followModeOption);
+    QCommandLineOption sessionOption(
+        QStringList() << "s" << "session",
+        "Open and follow the latest Codex, Claude, or Antigravity session log.");
+    parser.addOption(sessionOption);
     QCommandLineOption versionOption(
         QStringList() << "version",
         "Displays version information.");
@@ -5202,11 +5232,51 @@ int main(int argc, char *argv[])
 
     QStringList filesToOpen = parser.positionalArguments();
 
+    const bool sessionMode = parser.isSet(sessionOption);
+    if (sessionMode) {
+        if (!filesToOpen.isEmpty()) {
+            QTextStream(stderr) << "mdv: --session cannot be combined with file paths"
+                                << Qt::endl;
+            return 1;
+        }
+        QString session;
+        QDateTime sessionModTime;
+        const auto checkCandidate = [&](const QString &candidatePath) {
+            if (candidatePath.isEmpty()) {
+                return;
+            }
+            const QFileInfo info(candidatePath);
+            if (!info.exists()) {
+                return;
+            }
+            const QDateTime mod = info.lastModified();
+            if (session.isEmpty() || mod > sessionModTime) {
+                session = candidatePath;
+                sessionModTime = mod;
+            }
+        };
+
+        checkCandidate(mdv::latestCodexSession());
+        checkCandidate(mdv::latestClaudeSessionForCwd(QDir::currentPath()));
+        checkCandidate(mdv::latestAntigravitySession());
+
+        if (session.isEmpty()) {
+            QTextStream(stderr) << "mdv: no AI session log found under "
+                                << QDir::home().filePath(QStringLiteral(".codex/sessions"))
+                                << ", " << QDir::home().filePath(QStringLiteral(".claude/projects"))
+                                << ", or " << QDir::home().filePath(QStringLiteral(".gemini/antigravity-cli/brain"))
+                                << Qt::endl;
+            return 1;
+        }
+        QTextStream(stderr) << "mdv: following AI session " << session << Qt::endl;
+        filesToOpen.append(session);
+    }
+
     // If mdv is already running, open these files (if any) in a new window
     // of that instance and quit: tabs can only be dragged between windows
     // in the same process, so a second OS process would be a dead end for
     // that even though it looks like "another mdv window" to the user.
-    const bool followMode = parser.isSet(followModeOption);
+    const bool followMode = parser.isSet(followModeOption) || sessionMode;
     if (SingleInstanceCoordinator::handOffToRunningInstance(
             filesToOpen, parser.isSet(viewerModeOption), followMode)) {
         return 0;

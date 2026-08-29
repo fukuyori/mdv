@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 English | [日本語](CHANGELOG.ja.md)
 
+## [0.6.3] - 2026-08-29
+
+### Added
+
+- Added support for recognizing and rendering Antigravity transcript log files (`transcript.jsonl` / `transcript_full.jsonl` under `~/.gemini/antigravity-cli/brain`) in follow mode as timestamped conversations.
+
+- Extended the `-s`/`--session` option to search across Codex, Claude Code, and Antigravity session logs and automatically follow the most recently updated AI session.
+
+- New `-s`/`--session` option validates the logs under `~/.codex/sessions` and
+  opens the most recently modified Codex session in follow mode, regardless of
+  the current directory, so an ongoing session can be watched without locating
+  its log file by hand.
+
+- Follow mode now also recognizes Claude Code session `.jsonl` files (as
+  written under `~/.claude/projects`) and renders their recent user/assistant
+  messages as a timestamped conversation. Thinking blocks, tool calls and
+  results, subagent sidechains, slash-command bookkeeping, and metadata
+  entries are filtered from the preview without modifying the source log, and
+  consecutive entries from the same speaker are merged into one section.
+
+### Fixed
+
+- Session discovery now reads the complete bounded `session_meta` line instead
+  of truncating it at 16 KiB. Current Codex logs with larger embedded agent
+  instructions are therefore recognized instead of falling back to an older
+  session.
+
 ## [0.6.2] - 2026-08-29
 
 ### Added

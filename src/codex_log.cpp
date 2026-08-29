@@ -1,13 +1,22 @@
 #include "codex_log.h"
 
+#include <QDir>
+#include <QDirIterator>
+#include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QStringList>
 
+#include <algorithm>
+#include <utility>
+#include <vector>
+
 namespace mdv {
 namespace {
+
+constexpr qint64 sessionMetadataMaxBytes = 1024 * 1024;
 
 QJsonObject parseObject(const QByteArray &line)
 {
@@ -64,6 +73,63 @@ QString messageText(const QJsonObject &payload)
     return parts.join(QLatin1String("\n\n"));
 }
 
+QString sessionCwd(const QByteArray &sample)
+{
+    qsizetype start = 0;
+    int inspected = 0;
+    while (start < sample.size() && inspected < 20) {
+        qsizetype end = sample.indexOf('\n', start);
+        if (end < 0) {
+            end = sample.size();
+        }
+        const QJsonObject event = parseObject(sample.mid(start, end - start));
+        if (event.value(QStringLiteral("type")).toString() == QLatin1String("session_meta")) {
+            const QJsonObject payload = event.value(QStringLiteral("payload")).toObject();
+            if (!payload.value(QStringLiteral("id")).toString().isEmpty()) {
+                return payload.value(QStringLiteral("cwd")).toString();
+            }
+            return {};
+        }
+        start = end + 1;
+        ++inspected;
+    }
+    return {};
+}
+
+std::vector<std::pair<QDateTime, QString>> sessionCandidates(const QString &root)
+{
+    std::vector<std::pair<QDateTime, QString>> candidates;
+    QDirIterator it(
+        root, QStringList() << QStringLiteral("rollout-*.jsonl"), QDir::Files,
+        QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        const QFileInfo info(it.nextFileInfo());
+        candidates.emplace_back(info.lastModified(), info.absoluteFilePath());
+    }
+    std::sort(candidates.begin(), candidates.end(),
+        [](const auto &a, const auto &b) {
+            if (a.first != b.first) {
+                return a.first > b.first;
+            }
+            return a.second > b.second;
+        });
+    return candidates;
+}
+
+QByteArray readSessionMetadata(QFile &file)
+{
+    QByteArray sample = file.read(sessionMetadataMaxBytes + 1);
+    const qsizetype newline = sample.indexOf('\n');
+    if (newline >= 0) {
+        sample.truncate(newline + 1);
+        return sample;
+    }
+    if (sample.size() > sessionMetadataMaxBytes || !file.atEnd()) {
+        return {};
+    }
+    return sample;
+}
+
 } // namespace
 
 bool isCodexEventLog(const QString &path, const QByteArray &sample)
@@ -98,6 +164,54 @@ bool isCodexEventLog(const QString &path, const QByteArray &sample)
         ++inspected;
     }
     return false;
+}
+
+bool codexSessionMatchesCwd(const QByteArray &sample, const QString &cwd)
+{
+    return sessionCwd(sample) == cwd;
+}
+
+QString latestCodexSessionForCwd(const QString &cwd)
+{
+    const QString root = QDir::home().filePath(QStringLiteral(".codex/sessions"));
+    const auto candidates = sessionCandidates(root);
+
+    // The session's working directory is only recorded inside the file, so
+    // inspect the newest logs' heads and stop at the first match; cap the
+    // probing so a large history does not stall startup.
+    int probed = 0;
+    for (const auto &[modified, path] : candidates) {
+        if (++probed > 100) {
+            break;
+        }
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) {
+            continue;
+        }
+        if (codexSessionMatchesCwd(readSessionMetadata(file), cwd)) {
+            return path;
+        }
+    }
+    return {};
+}
+
+QString latestCodexSession(const QString &sessionsRoot)
+{
+    const QString root = sessionsRoot.isEmpty()
+        ? QDir::home().filePath(QStringLiteral(".codex/sessions"))
+        : sessionsRoot;
+    const auto candidates = sessionCandidates(root);
+    for (const auto &[modified, path] : candidates) {
+        Q_UNUSED(modified);
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) {
+            continue;
+        }
+        if (!sessionCwd(readSessionMetadata(file)).isEmpty()) {
+            return path;
+        }
+    }
+    return {};
 }
 
 QString renderCodexEventLog(

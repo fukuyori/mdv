@@ -42,8 +42,11 @@ Viewer mode (`-v`), with the editor pane hidden:
   offers to reload it
 - Follow mode (`-f`) automatically reloads files as they grow and keeps the
   preview pinned to the last line, with the editor pane hidden
-- Codex `rollout-*.jsonl` event logs opened in follow mode are shown as a
-  readable, timestamped conversation containing only user and assistant text
+- Codex `rollout-*.jsonl` event logs, Claude Code session `.jsonl` files,
+  and Antigravity `transcript.jsonl` logs opened in follow mode are rendered
+  as readable, timestamped conversations with user and assistant text.
+- Session mode (`-s`) finds and follows the most recently updated AI session
+  (Codex, Claude, or Antigravity) without needing a manual log path.
 - Encoding safety: files are read as UTF-8 (UTF-16/32 with BOM are detected
   and preserved on save), and a warning is shown before opening or saving a
   file that did not decode cleanly
@@ -304,6 +307,33 @@ instructions, reasoning, tool calls, and command output are hidden. The source
 JSONL file is never modified. The same 10,000-line and 8 MiB source-tail limits
 apply, so a very large session shows its recent conversation rather than its
 entire history.
+
+Claude Code session logs are recognized and rendered the same way (replace the
+example path with a session file under `~/.claude/projects`):
+
+```sh
+./build/mdv -f ~/.claude/projects/<project>/<session-id>.jsonl
+```
+
+Only user and assistant text is shown; thinking blocks, tool calls and their
+results, subagent sidechains, slash-command bookkeeping, and other metadata
+entries are hidden, and consecutive entries from the same speaker are merged
+into a single section.
+
+Antigravity transcript logs (`transcript.jsonl` / `transcript_full.jsonl`) are also automatically recognized and rendered:
+
+```sh
+./build/mdv -f ~/.gemini/antigravity-cli/brain/<conversation-id>/.system_generated/logs/transcript.jsonl
+```
+
+Instead of locating an AI log file by hand, `-s` finds and follows the latest AI session:
+
+```sh
+mdv -s
+```
+
+This searches all session logs under `~/.codex/sessions`, `~/.claude/projects`, and `~/.gemini/antigravity-cli/brain`, and opens the most recently modified valid session log in follow mode.
+cannot be combined with explicit file paths.
 
 Scrolling away from the bottom pauses automatic scrolling, so incoming text
 does not interrupt reading earlier content. Automatic following resumes when

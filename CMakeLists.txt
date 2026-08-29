@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(mdv VERSION 0.6.2 LANGUAGES C CXX)
+project(mdv VERSION 0.6.3 LANGUAGES C CXX)
 
 include(CTest)
 
@@ -27,6 +27,8 @@ target_include_directories(md4c PUBLIC third_party/md4c)
 
 if(APPLE)
     add_executable(mdv MACOSX_BUNDLE
+        src/antigravity_log.cpp
+        src/claude_log.cpp
         src/codex_log.cpp
         src/main.cpp
         resources/mdv.qrc
@@ -37,6 +39,8 @@ if(APPLE)
     )
 elseif(WIN32)
     add_executable(mdv
+        src/antigravity_log.cpp
+        src/claude_log.cpp
         src/codex_log.cpp
         src/main.cpp
         resources/mdv.qrc
@@ -44,6 +48,8 @@ elseif(WIN32)
     )
 else()
     add_executable(mdv
+        src/antigravity_log.cpp
+        src/claude_log.cpp
         src/codex_log.cpp
         src/main.cpp
         resources/mdv.qrc
@@ -103,4 +109,20 @@ if(BUILD_TESTING)
     target_include_directories(mdv_codex_log_test PRIVATE src)
     target_link_libraries(mdv_codex_log_test PRIVATE Qt6::Core)
     add_test(NAME mdv_codex_log_test COMMAND mdv_codex_log_test)
+
+    add_executable(mdv_claude_log_test
+        tests/claude_log_test.cpp
+        src/claude_log.cpp
+    )
+    target_include_directories(mdv_claude_log_test PRIVATE src)
+    target_link_libraries(mdv_claude_log_test PRIVATE Qt6::Core)
+    add_test(NAME mdv_claude_log_test COMMAND mdv_claude_log_test)
+
+    add_executable(mdv_antigravity_log_test
+        tests/antigravity_log_test.cpp
+        src/antigravity_log.cpp
+    )
+    target_include_directories(mdv_antigravity_log_test PRIVATE src)
+    target_link_libraries(mdv_antigravity_log_test PRIVATE Qt6::Core)
+    add_test(NAME mdv_antigravity_log_test COMMAND mdv_antigravity_log_test)
 endif()

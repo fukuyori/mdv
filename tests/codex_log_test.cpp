@@ -1,5 +1,10 @@
 #include "codex_log.h"
 
+#include <QDateTime>
+#include <QDir>
+#include <QFile>
+#include <QTemporaryDir>
+
 #include <cstdlib>
 #include <iostream>
 
@@ -11,6 +16,16 @@ void require(bool condition, const char *message)
         std::cerr << message << '\n';
         std::exit(EXIT_FAILURE);
     }
+}
+
+void writeLog(const QString &path, const QByteArray &data, const QDateTime &modified)
+{
+    QFile file(path);
+    require(file.open(QIODevice::WriteOnly), "could not create a test session log");
+    require(file.write(data) == data.size(), "could not write a test session log");
+    require(file.flush(), "could not flush a test session log");
+    require(file.setFileTime(modified, QFileDevice::FileModificationTime),
+        "could not set a test session timestamp");
 }
 
 } // namespace
@@ -58,6 +73,48 @@ int main()
         "developer instructions were rendered");
     require(!markdown.contains(QLatin1String("secret command output")),
         "tool output was rendered");
+
+    const QByteArray metaLine =
+        R"json({"type":"session_meta","payload":{"id":"session-id","cwd":"/home/fuk/project"}})json";
+    require(mdv::codexSessionMatchesCwd(metaLine, QStringLiteral("/home/fuk/project")),
+        "matching session cwd was not detected");
+    require(!mdv::codexSessionMatchesCwd(metaLine, QStringLiteral("/home/fuk/other")),
+        "non-matching session cwd was accepted");
+    require(!mdv::codexSessionMatchesCwd(R"json({"type":"ordinary"})json", QStringLiteral("/home/fuk/project")),
+        "a log without session metadata was accepted");
+
+    QTemporaryDir sessions;
+    require(sessions.isValid(), "could not create a temporary sessions directory");
+    QDir root(sessions.path());
+    require(root.mkpath(QStringLiteral("2026/08/28")),
+        "could not create an older session directory");
+    require(root.mkpath(QStringLiteral("2026/08/29")),
+        "could not create a newer session directory");
+    const QString older = root.filePath(QStringLiteral("2026/08/28/rollout-older.jsonl"));
+    const QString newest = root.filePath(QStringLiteral("2026/08/29/rollout-newest.jsonl"));
+    const QString invalid = root.filePath(QStringLiteral("2026/08/29/rollout-invalid.jsonl"));
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    const QByteArray longMetaLine = QByteArrayLiteral(
+        "{\"type\":\"session_meta\",\"payload\":{\"id\":\"long-session\","
+        "\"cwd\":\"/home/fuk/project\",\"base_instructions\":\"")
+        + QByteArray(20 * 1024, 'x') + QByteArrayLiteral("\"}}\n");
+    require(mdv::codexSessionMatchesCwd(longMetaLine, QStringLiteral("/home/fuk/project")),
+        "long session metadata was not parsed");
+    writeLog(older, metaLine, now.addSecs(-20));
+    writeLog(newest, longMetaLine, now.addSecs(-10));
+    writeLog(invalid, QByteArrayLiteral("{incomplete"), now);
+    QFile persistedNewest(newest);
+    require(persistedNewest.open(QIODevice::ReadOnly), "could not reopen the long session log");
+    require(mdv::codexSessionMatchesCwd(
+                persistedNewest.readAll(), QStringLiteral("/home/fuk/project")),
+        "persisted long session metadata was not parsed");
+    const QString selected = mdv::latestCodexSession(sessions.path());
+    require(selected == newest, "the newest valid Codex session was not selected");
+
+    QTemporaryDir emptySessions;
+    require(emptySessions.isValid(), "could not create an empty sessions directory");
+    require(mdv::latestCodexSession(emptySessions.path()).isEmpty(),
+        "an empty sessions directory returned a session");
 
     const QString empty = mdv::renderCodexEventLog(
         QStringLiteral("{broken"), QStringLiteral("Conversation"), QStringLiteral("User"),
