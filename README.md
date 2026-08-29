@@ -61,7 +61,8 @@ Viewer mode (`-v`), with the editor pane hidden:
 - Translate the preview with a local [Ollama](https://ollama.com) server:
   switch between original, bilingual (original and translation interleaved),
   and translation-only views with buttons above the preview
-  (see [Translation](#translation))
+  (see [Translation](#translation)). Selected preview text can also be
+  translated independently from its context menu, including in follow mode
 - Switch the UI language between English and Japanese
 - Show or hide the editor pane with a slim toggle beside the preview, or from
   the View menu
@@ -174,12 +175,20 @@ open build/mdv.app --args -f log.md   # macOS
 ```
 
 Follow mode is read-only: it keeps the editor pane hidden and disables save
-and editing actions so an external writer cannot be overwritten. Additional
-files opened in the same follow-mode window are followed in the same way.
+and editing actions so an external writer cannot be overwritten. Bilingual
+and translation-only views are also disabled because continuous translation
+may not keep pace with incoming text; selected text can still be translated
+on demand. Additional files opened in the same follow-mode window are followed
+in the same way.
 Only newly appended bytes are read after the initial load. The displayed tail
 is bounded to the last 10,000 lines and at most 8 MiB of source data, so memory
 use does not grow with the file; truncation, in-place overwrite, and file
 replacement/rotation rebuild the bounded tail from the new file.
+
+Scrolling away from the bottom pauses automatic scrolling, so incoming text
+does not interrupt reading earlier content. Automatic following resumes when
+you scroll back to the bottom or press `Esc`, which jumps directly to the
+latest content.
 
 The Open and Save As dialogs start in the current working directory (home
 when the app is launched from Finder) and then follow the directory you
@@ -197,6 +206,12 @@ Use the buttons above the preview (or the Translation menu) to switch views:
 - **Original** - the plain preview
 - **Bilingual** - each block of the original followed by its translation
 - **Translation** - translated text only
+
+To translate only part of the preview, select its text and choose **Translate
+Selection** from the right-click menu or the Translation menu. The result
+window shows both the selected source and its translation and provides a
+button to copy the translation. This one-shot translation is also available
+in viewer and follow (`-f`) modes.
 
 Translation > Translation Settings configures the endpoint (default
 `http://127.0.0.1:11434`), the model (installed models are listed

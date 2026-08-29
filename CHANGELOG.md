@@ -11,10 +11,17 @@ English | [日本語](CHANGELOG.ja.md)
 
 ### Added
 
+- Preview text selections can be translated independently from the context or
+  Translation menu, with source/translation display and translation copying;
+  this is available in normal, viewer, and follow modes.
 - Follow mode (`-f`) opens files read-only with the editor pane hidden,
   automatically reloads changes, and keeps the last line at the bottom of
-  the preview without risking overwrites from save actions. It reads appended
-  bytes incrementally and bounds the displayed tail to 10,000 lines and 8 MiB.
+  the preview without risking overwrites from save actions. Bilingual and
+  translation-only views are disabled in this mode while selection translation
+  remains available. It reads appended bytes incrementally and bounds the
+  displayed tail to 10,000 lines and 8 MiB. Scrolling back pauses automatic
+  scrolling without losing the reading position; reaching the bottom or
+  pressing `Esc` resumes following the latest content.
 
 ## [0.5.3] - 2026-08-06
 

@@ -372,7 +372,9 @@ static QString previewScript()
         "var __mdvBridge = null;"
         "var __mdvProgTs = 0;"
         "var __mdvRenderGeneration = 0;"
+        "var __mdvFollowMode = false;"
         "var __mdvFollowTail = false;"
+        "var __mdvPausedScrollY = 0;"
         "new QWebChannel(qt.webChannelTransport, function(channel) {"
         "  __mdvBridge = channel.objects.mdv;"
         "});"
@@ -391,9 +393,30 @@ static QString previewScript()
         "  __mdvProgTs = Date.now();"
         "  window.scrollTo(0, document.documentElement.scrollHeight);"
         "}"
+        "function __mdvRestoreFollowPosition() {"
+        "  if (!__mdvFollowMode) return;"
+        "  if (__mdvFollowTail) {"
+        "    __mdvScrollToBottom();"
+        "  } else {"
+        "    __mdvProgTs = Date.now();"
+        "    var maxY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);"
+        "    window.scrollTo(0, Math.min(__mdvPausedScrollY, maxY));"
+        "  }"
+        "}"
+        "function __mdvResumeFollowTail() {"
+        "  if (!__mdvFollowMode) return;"
+        "  __mdvFollowTail = true;"
+        "  requestAnimationFrame(__mdvRestoreFollowPosition);"
+        "}"
         "function __mdvSetFollowTail(enabled) {"
-        "  __mdvFollowTail = enabled;"
-        "  if (enabled) requestAnimationFrame(__mdvScrollToBottom);"
+        "  var wasEnabled = __mdvFollowMode;"
+        "  __mdvFollowMode = enabled;"
+        "  if (!enabled) {"
+        "    __mdvFollowTail = false;"
+        "    return;"
+        "  }"
+        "  if (!wasEnabled) __mdvFollowTail = true;"
+        "  requestAnimationFrame(__mdvRestoreFollowPosition);"
         "}"
         "function __mdvJumpToHeading(index, count, title, occurrence) {"
         "  var hs = __mdvHeadings();"
@@ -522,6 +545,7 @@ static QString previewScript()
         "}"
         "function __mdvSetContent(html) {"
         "  var generation = ++__mdvRenderGeneration;"
+        "  if (__mdvFollowMode && !__mdvFollowTail) __mdvPausedScrollY = window.scrollY;"
         "  var c = document.getElementById('content');"
         "  c.innerHTML = html;"
         "  __mdvRenderAlerts(c);"
@@ -580,7 +604,7 @@ static QString previewScript()
         "    used[id] = 1;"
         "    hs[i].id = id;"
         "  }"
-        "  if (__mdvFollowTail) requestAnimationFrame(__mdvScrollToBottom);"
+        "  if (__mdvFollowMode) requestAnimationFrame(__mdvRestoreFollowPosition);"
         "}"
         "function __mdvSync(count, segment, t, fraction) {"
         "  var hs = __mdvHeadings();"
@@ -604,8 +628,13 @@ static QString previewScript()
         "  __mdvRaf = true;"
         "  requestAnimationFrame(function() {"
         "    __mdvRaf = false;"
-        "    if (!__mdvBridge) return;"
         "    if (Date.now() - __mdvProgTs < 150) return;"
+        "    if (__mdvFollowMode) {"
+        "      var maxY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);"
+        "      __mdvFollowTail = maxY - window.scrollY <= 32;"
+        "      if (!__mdvFollowTail) __mdvPausedScrollY = window.scrollY;"
+        "    }"
+        "    if (!__mdvBridge) return;"
         "    var hs = __mdvHeadings();"
         "    var ys = __mdvAnchorYs(hs);"
         "    var sy = window.scrollY;"
@@ -621,8 +650,14 @@ static QString previewScript()
         "    __mdvBridge.previewScrolled(hs.length, segment, t, sy / total);"
         "  });"
         "}, {passive: true});"
+        "window.addEventListener('keydown', function(event) {"
+        "  if (__mdvFollowMode && !__mdvFollowTail && event.key === 'Escape') {"
+        "    event.preventDefault();"
+        "    __mdvResumeFollowTail();"
+        "  }"
+        "});"
         "new ResizeObserver(function() {"
-        "  if (__mdvFollowTail) __mdvScrollToBottom();"
+        "  if (__mdvFollowMode) __mdvRestoreFollowPosition();"
         "}).observe(document.getElementById('content'));");
 }
 
@@ -718,9 +753,13 @@ public:
         fillSlots();
     }
 
-    void requestTranslation(const QString &key, const QString &markdown)
+    void requestTranslation(const QString &key, const QString &markdown, bool urgent = false)
     {
-        queue_.append({key, markdown});
+        queue_.append({key, markdown, urgent});
+        if (urgent) {
+            std::stable_partition(queue_.begin(), queue_.end(),
+                [](const Job &job) { return job.urgent; });
+        }
         fillSlots();
     }
 
@@ -737,6 +776,9 @@ public:
             rank.insert(orderedKeys.at(i), i);
         }
         std::stable_sort(queue_.begin(), queue_.end(), [&rank](const Job &a, const Job &b) {
+            if (a.urgent != b.urgent) {
+                return a.urgent;
+            }
             return rank.value(a.key, INT_MAX) < rank.value(b.key, INT_MAX);
         });
     }
@@ -781,6 +823,7 @@ private:
     struct Job {
         QString key;
         QString text;
+        bool urgent = false;
     };
 
     void fillSlots()
@@ -1285,6 +1328,7 @@ public:
     bool confirmDiscardChanges();
     void checkForExternalChanges();
     void reparentToWindow(MainWindow *newWindow);
+    void cancelPendingTranslations();
 
     void updateOutline();
     void updatePreview();
@@ -1293,8 +1337,15 @@ public:
     void applyFontsAndTheme();
     void applyPaneVisibility();
     void updateUiTexts();
+    void translatePreviewSelection(const QString &selectedText = QString());
 
     bool hasPendingTranslation(const QString &key) const { return pendingTranslations_.contains(key); }
+    bool hasPendingSelectionTranslation(const QString &key) const
+    {
+        return pendingSelectionTranslations_.contains(key);
+    }
+    void applySelectionTranslationResult(const QString &key, const QString &text);
+    void applySelectionTranslationFailure(const QString &key, const QString &error);
     void applyTranslationResult(const QString &key, const QString &text)
     {
         pendingTranslations_.remove(key);
@@ -1313,8 +1364,10 @@ public:
     // Returns true if this tab had translation state that needed resetting.
     bool cancelTranslationsOnFatalError()
     {
-        const bool wasTranslating = !pendingTranslations_.isEmpty() || previewMode_ != "original";
+        const bool wasTranslating = !pendingTranslations_.isEmpty()
+            || !pendingSelectionTranslations_.isEmpty() || previewMode_ != "original";
         pendingTranslations_.clear();
+        pendingSelectionTranslations_.clear();
         if (previewMode_ != "original") {
             previewMode_ = "original";
             updateTranslationModeUi();
@@ -1396,6 +1449,8 @@ private:
     QString composePreviewHtml() const;
     void refreshTranslatedPreview();
     void cancelOwnTranslations();
+    void cancelSelectionTranslations();
+    void showSelectionTranslationResult(const QString &source, const QString &translation);
 
     void scrollEditorToPosition(int target)
     {
@@ -1463,6 +1518,7 @@ private:
     QTimer *translationPriorityTimer_ = nullptr;
     QTimer *followPollTimer_ = nullptr;
     QTimer *followReloadTimer_ = nullptr;
+    QShortcut *resumeFollowShortcut_ = nullptr;
     QString pendingPreviewHtml_;
     QUrl loadedPreviewBaseUrl_;
     bool previewLoaded_ = false;
@@ -1495,6 +1551,8 @@ private:
     QString previewMode_ = QStringLiteral("original");
     QHash<QString, QString> translationCache_;
     QSet<QString> pendingTranslations_;
+    QHash<QString, QString> pendingSelectionTranslations_;
+    quint64 selectionTranslationSerial_ = 0;
     QToolButton *originalModeButton_ = nullptr;
     QToolButton *bilingualModeButton_ = nullptr;
     QToolButton *translatedModeButton_ = nullptr;
@@ -1545,13 +1603,18 @@ public:
                 if (tab->hasPendingTranslation(key)) {
                     tab->applyTranslationResult(key, text);
                 }
+                if (tab->hasPendingSelectionTranslation(key)) {
+                    tab->applySelectionTranslationResult(key, text);
+                }
             }
         });
         connect(translator_, &OllamaTranslator::blockFailed, this, [this](const QString &key, const QString &error) {
-            Q_UNUSED(error);
             for (DocumentTab *tab : allTabs()) {
                 if (tab->hasPendingTranslation(key)) {
                     tab->applyTranslationFailure(key);
+                }
+                if (tab->hasPendingSelectionTranslation(key)) {
+                    tab->applySelectionTranslationFailure(key, error);
                 }
             }
         });
@@ -1764,6 +1827,13 @@ public:
         if (key == "trOriginal") return ja ? "原文" : "Original";
         if (key == "trBilingual") return ja ? "対訳" : "Bilingual";
         if (key == "trTranslated") return ja ? "翻訳" : "Translation";
+        if (key == "trSelection") return ja ? "選択範囲を翻訳(&L)" : "Translate Se&lection";
+        if (key == "trSelectionContext") return ja ? "選択範囲を翻訳" : "Translate Selection";
+        if (key == "trSelectionStarted") return ja ? "選択範囲を翻訳しています..." : "Translating selection...";
+        if (key == "trSelectionTitle") return ja ? "選択範囲の翻訳" : "Selection Translation";
+        if (key == "trSelectionSource") return ja ? "原文" : "Original";
+        if (key == "trSelectionResult") return ja ? "訳文" : "Translation";
+        if (key == "trCopyResult") return ja ? "訳文をコピー" : "Copy Translation";
         if (key == "trSettings") return ja ? "翻訳の設定(&S)..." : "Translation &Settings...";
         if (key == "trSettingsTitle") return ja ? "翻訳の設定" : "Translation Settings";
         if (key == "trEndpoint") return ja ? "Ollama エンドポイント:" : "Ollama endpoint:";
@@ -1888,7 +1958,28 @@ public:
         if (tab == activeTab()) {
             updateWindowTitle();
             updateEditActions();
+            updateTranslationActions(tab);
         }
+    }
+
+    void updateTranslationActions(DocumentTab *tab)
+    {
+        const bool hasTab = tab != nullptr && tab == activeTab();
+        const bool fullTranslationEnabled = hasTab && !tab->isFollowMode();
+
+        originalModeAction_->setEnabled(hasTab);
+        bilingualModeAction_->setEnabled(fullTranslationEnabled);
+        translatedModeAction_->setEnabled(fullTranslationEnabled);
+
+        if (!hasTab) {
+            return;
+        }
+        const QSignalBlocker blocker1(originalModeAction_);
+        const QSignalBlocker blocker2(bilingualModeAction_);
+        const QSignalBlocker blocker3(translatedModeAction_);
+        originalModeAction_->setChecked(tab->previewMode() == "original");
+        bilingualModeAction_->setChecked(tab->previewMode() == "bilingual");
+        translatedModeAction_->setChecked(tab->previewMode() == "translated");
     }
 
     void onEditorCopyAvailable(DocumentTab *tab, bool available)
@@ -2232,6 +2323,12 @@ private:
             if (DocumentTab *tab = activeTab()) tab->setPreviewMode(action->data().toString());
         });
 
+        translateSelectionAction_ = new QAction(this);
+        translateSelectionAction_->setEnabled(false);
+        connect(translateSelectionAction_, &QAction::triggered, this, [this] {
+            if (DocumentTab *tab = activeTab()) tab->translatePreviewSelection();
+        });
+
         translationSettingsAction_ = new QAction(this);
         connect(translationSettingsAction_, &QAction::triggered, this, [this] { showTranslationSettings(); });
 
@@ -2291,7 +2388,14 @@ private:
         translationMenu_->addAction(bilingualModeAction_);
         translationMenu_->addAction(translatedModeAction_);
         translationMenu_->addSeparator();
+        translationMenu_->addAction(translateSelectionAction_);
+        translationMenu_->addSeparator();
         translationMenu_->addAction(translationSettingsAction_);
+        connect(translationMenu_, &QMenu::aboutToShow, this, [this] {
+            DocumentTab *tab = activeTab();
+            updateTranslationActions(tab);
+            translateSelectionAction_->setEnabled(tab != nullptr && tab->preview()->hasSelection());
+        });
 
         viewMenu_ = menuBar()->addMenu(QString());
         themeMenu_ = viewMenu_->addMenu(QString());
@@ -2354,6 +2458,7 @@ private:
         originalModeAction_->setText(uiText("trOriginal"));
         bilingualModeAction_->setText(uiText("trBilingual"));
         translatedModeAction_->setText(uiText("trTranslated"));
+        translateSelectionAction_->setText(uiText("trSelection"));
         translationSettingsAction_->setText(uiText("trSettings"));
 
         englishLanguageAction_->setText("English");
@@ -2477,6 +2582,7 @@ private:
         if (!tab->confirmDiscardChanges()) {
             return;
         }
+        tab->cancelPendingTranslations();
         tabWidget_->removeTab(index);
         tab->deleteLater();
 
@@ -2612,15 +2718,7 @@ private:
         DocumentTab *tab = activeTab();
         updateWindowTitle();
         updateEditActions();
-
-        if (tab != nullptr) {
-            const QSignalBlocker blocker1(originalModeAction_);
-            const QSignalBlocker blocker2(bilingualModeAction_);
-            const QSignalBlocker blocker3(translatedModeAction_);
-            originalModeAction_->setChecked(tab->previewMode() == "original");
-            bilingualModeAction_->setChecked(tab->previewMode() == "bilingual");
-            translatedModeAction_->setChecked(tab->previewMode() == "translated");
-        }
+        updateTranslationActions(tab);
 
         if (findDialog_ != nullptr && findDialog_->isVisible()) {
             updatePreviewSearchHighlight();
@@ -3080,6 +3178,8 @@ private:
                 "QComboBox QAbstractItemView { background: #2b2c2f; color: #e8eaed; border: 1px solid #5f6368; selection-background-color: #34517a; selection-color: #ffffff; }"
                 "QToolButton { background: #2b2c2f; color: #e8eaed; border: 1px solid #5f6368; padding: 3px 10px; }"
                 "QToolButton:checked { background: #34517a; }"
+                "QToolButton:disabled { background: #26272a; color: #777b80; border-color: #3c4043; }"
+                "QMenu::item:disabled { color: #777b80; }"
                 "QTabBar::tab { background: #2b2c2f; color: #e8eaed; padding: 6px 10px; }"
                 "QTabBar::tab:selected { background: #34517a; }"
                 "QTabWidget::pane { border: 1px solid #3c4043; }"
@@ -3095,6 +3195,8 @@ private:
                 "QComboBox QAbstractItemView { background: #fbf4e6; color: #43372b; border: 1px solid #d4c2a3; selection-background-color: #d8c49a; selection-color: #2f261e; }"
                 "QToolButton { background: #fbf4e6; color: #43372b; border: 1px solid #d4c2a3; padding: 3px 10px; }"
                 "QToolButton:checked { background: #d8c49a; }"
+                "QToolButton:disabled { background: #eee5d4; color: #a99b86; border-color: #dccfb8; }"
+                "QMenu::item:disabled { color: #a99b86; }"
                 "QTabBar::tab { background: #fbf4e6; color: #43372b; padding: 6px 10px; }"
                 "QTabBar::tab:selected { background: #d8c49a; }"
                 "QTabWidget::pane { border: 1px solid #d4c2a3; }"
@@ -3110,6 +3212,8 @@ private:
                 "QComboBox QAbstractItemView { background: #ffffff; color: #202124; border: 1px solid #d0d4dc; selection-background-color: #cfe3ff; selection-color: #111827; }"
                 "QToolButton { background: #ffffff; color: #202124; border: 1px solid #d0d4dc; padding: 3px 10px; }"
                 "QToolButton:checked { background: #cfe3ff; color: #111827; }"
+                "QToolButton:disabled { background: #eef0f3; color: #9aa0aa; border-color: #d8dbe1; }"
+                "QMenu::item:disabled { color: #9aa0aa; }"
                 "QTabBar::tab { background: #ffffff; color: #202124; padding: 6px 10px; }"
                 "QTabBar::tab:selected { background: #cfe3ff; color: #111827; }"
                 "QTabWidget::pane { border: 1px solid #d0d4dc; }"
@@ -3211,6 +3315,7 @@ private:
     QAction *originalModeAction_ = nullptr;
     QAction *bilingualModeAction_ = nullptr;
     QAction *translatedModeAction_ = nullptr;
+    QAction *translateSelectionAction_ = nullptr;
     QAction *translationSettingsAction_ = nullptr;
 };
 
@@ -3238,7 +3343,28 @@ DocumentTab::DocumentTab(MainWindow *window, QWidget *parent)
     editor_->setFont(editorFont);
 
     preview_->setPage(new PreviewPage(preview_));
-    preview_->setContextMenuPolicy(Qt::DefaultContextMenu);
+    resumeFollowShortcut_ = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+    resumeFollowShortcut_->setContext(Qt::WidgetWithChildrenShortcut);
+    resumeFollowShortcut_->setEnabled(false);
+    connect(resumeFollowShortcut_, &QShortcut::activated, this, [this] {
+        if (followMode_ && previewLoaded_) {
+            preview_->page()->runJavaScript(QStringLiteral("__mdvResumeFollowTail();"));
+        }
+    });
+    preview_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(preview_, &QWebEngineView::customContextMenuRequested, this, [this](const QPoint &pos) {
+        QMenu *menu = preview_->createStandardContextMenu();
+        const QString selectedText = preview_->selectedText().trimmed();
+        if (!selectedText.isEmpty()) {
+            menu->addSeparator();
+            QAction *translateAction = menu->addAction(window_->uiText("trSelectionContext"));
+            connect(translateAction, &QAction::triggered, this, [this, selectedText] {
+                translatePreviewSelection(selectedText);
+            });
+        }
+        menu->setAttribute(Qt::WA_DeleteOnClose);
+        menu->popup(preview_->mapToGlobal(pos));
+    });
     // Remote images (README badges etc.) referenced from the local page.
     preview_->settings()->setAttribute(QWebEngineSettings::LocalContentCanAccessRemoteUrls, true);
     preview_->settings()->setAttribute(QWebEngineSettings::JavascriptCanOpenWindows, false);
@@ -3261,7 +3387,7 @@ DocumentTab::DocumentTab(MainWindow *window, QWidget *parent)
     };
     bridge->onExtensionsRendered = [this] {
         if (followMode_) {
-            preview_->page()->runJavaScript(QStringLiteral("__mdvScrollToBottom();"));
+            preview_->page()->runJavaScript(QStringLiteral("__mdvRestoreFollowPosition();"));
         } else {
             syncPreviewToEditor();
         }
@@ -3499,6 +3625,11 @@ void DocumentTab::updatePreview()
 
 void DocumentTab::setPreviewMode(const QString &mode)
 {
+    if (followMode_ && mode != "original") {
+        updateTranslationModeUi();
+        return;
+    }
+
     // Translating needs a model; give the user a chance to pick one first.
     if (mode != "original" && window_->ollamaModel().trimmed().isEmpty()) {
         window_->showTranslationSettings();
@@ -3536,11 +3667,115 @@ void DocumentTab::cancelOwnTranslations()
     pendingTranslations_.clear();
 }
 
+void DocumentTab::cancelSelectionTranslations()
+{
+    QSet<QString> keysToCancel;
+    for (auto it = pendingSelectionTranslations_.constBegin();
+         it != pendingSelectionTranslations_.constEnd(); ++it) {
+        keysToCancel.insert(it.key());
+    }
+    window_->translator()->cancelKeys(keysToCancel);
+    pendingSelectionTranslations_.clear();
+}
+
+void DocumentTab::cancelPendingTranslations()
+{
+    cancelOwnTranslations();
+    cancelSelectionTranslations();
+}
+
+void DocumentTab::translatePreviewSelection(const QString &selectedText)
+{
+    const QString text = (selectedText.isEmpty() ? preview_->selectedText() : selectedText).trimmed();
+    if (text.isEmpty()) {
+        return;
+    }
+
+    if (window_->ollamaModel().trimmed().isEmpty()) {
+        window_->showTranslationSettings();
+        if (window_->ollamaModel().trimmed().isEmpty()) {
+            return;
+        }
+    }
+
+    window_->translator()->configure(
+        window_->ollamaEndpoint(), window_->ollamaModel(), window_->translationTarget());
+    window_->translator()->setMaxInFlight(window_->ollamaParallel());
+
+    const QString key = QStringLiteral("\x1eselection:%1:%2")
+        .arg(QString::number(reinterpret_cast<quintptr>(this), 16))
+        .arg(++selectionTranslationSerial_);
+    pendingSelectionTranslations_.insert(key, text);
+    window_->translator()->requestTranslation(key, text, true);
+
+    if (isActive()) {
+        window_->statusBar()->showMessage(window_->uiText("trSelectionStarted"));
+    }
+}
+
+void DocumentTab::applySelectionTranslationResult(const QString &key, const QString &text)
+{
+    if (!pendingSelectionTranslations_.contains(key)) {
+        return;
+    }
+    const QString source = pendingSelectionTranslations_.take(key);
+    showSelectionTranslationResult(source, text);
+    if (isActive()) {
+        window_->statusBar()->showMessage(window_->uiText("translationDone"), 3000);
+    }
+}
+
+void DocumentTab::applySelectionTranslationFailure(const QString &key, const QString &error)
+{
+    if (!pendingSelectionTranslations_.contains(key)) {
+        return;
+    }
+    pendingSelectionTranslations_.remove(key);
+    QMessageBox::warning(window_, window_->uiText("translationFailedTitle"),
+        window_->uiText("translationFailedText").arg(error));
+}
+
+void DocumentTab::showSelectionTranslationResult(const QString &source, const QString &translation)
+{
+    auto *dialog = new QDialog(window_);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(window_->uiText("trSelectionTitle"));
+
+    auto *layout = new QVBoxLayout(dialog);
+    layout->addWidget(new QLabel(window_->uiText("trSelectionSource"), dialog));
+
+    auto *sourceEdit = new QPlainTextEdit(source, dialog);
+    sourceEdit->setReadOnly(true);
+    layout->addWidget(sourceEdit, 1);
+
+    layout->addWidget(new QLabel(window_->uiText("trSelectionResult"), dialog));
+    auto *translationEdit = new QPlainTextEdit(translation, dialog);
+    translationEdit->setReadOnly(true);
+    layout->addWidget(translationEdit, 1);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+    QPushButton *copyButton = buttons->addButton(
+        window_->uiText("trCopyResult"), QDialogButtonBox::ActionRole);
+    connect(copyButton, &QPushButton::clicked, dialog, [translation] {
+        QApplication::clipboard()->setText(translation);
+    });
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    dialog->resize(680, 520);
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
+}
+
 void DocumentTab::updateTranslationModeUi()
 {
     originalModeButton_->setChecked(previewMode_ == "original");
     bilingualModeButton_->setChecked(previewMode_ == "bilingual");
     translatedModeButton_->setChecked(previewMode_ == "translated");
+    bilingualModeButton_->setEnabled(!followMode_);
+    translatedModeButton_->setEnabled(!followMode_);
+    window_->updateTranslationActions(this);
 }
 
 void DocumentTab::applyFontsAndTheme()
@@ -3650,6 +3885,8 @@ bool DocumentTab::loadFileImpl(const QString &path, bool followMode, bool quiet)
     editor_->setPlainText(text);
     currentFile_ = path;
     followMode_ = false;
+    resumeFollowShortcut_->setEnabled(false);
+    updateTranslationModeUi();
     editor_->setReadOnly(false);
     followPollTimer_->stop();
     followReloadTimer_->stop();
@@ -3807,6 +4044,12 @@ bool DocumentTab::applyFollowBuffer(const QString &path, bool quiet)
     editor_->setPlainText(text);
     currentFile_ = path;
     followMode_ = true;
+    resumeFollowShortcut_->setEnabled(true);
+    if (previewMode_ != "original") {
+        previewMode_ = QStringLiteral("original");
+        cancelOwnTranslations();
+    }
+    updateTranslationModeUi();
     editor_->setReadOnly(true);
     followPollTimer_->start();
     if (!quiet) {
@@ -4077,9 +4320,7 @@ void DocumentTab::reparentToWindow(MainWindow *newWindow)
         return;
     }
 
-    if (!pendingTranslations_.isEmpty()) {
-        cancelOwnTranslations();
-    }
+    cancelPendingTranslations();
 
     window_ = newWindow;
 
