@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 English | [日本語](CHANGELOG.ja.md)
 
+## [0.6.2] - 2026-08-29
+
+### Added
+
+- Follow mode now recognizes Codex `rollout-*.jsonl` event logs and renders
+  their recent user/assistant messages as a timestamped conversation. Duplicate
+  notifications, instructions, reasoning, tool events, and command output are
+  filtered from the preview without modifying the source log.
+
 ## [0.6.1] - 2026-08-29
 
 ### Fixed

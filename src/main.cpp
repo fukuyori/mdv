@@ -84,9 +84,10 @@
 #include <functional>
 
 #include "md4c-html.h"
+#include "codex_log.h"
 
 #ifndef MDV_VERSION
-#define MDV_VERSION "0.6.1"
+#define MDV_VERSION "0.6.2"
 #endif
 
 // ---------------------------------------------------------------------------
@@ -1632,6 +1633,7 @@ private:
     QByteArray loadedFileDigest_;
     bool syncingEditorFromPreview_ = false;
     bool followMode_ = false;
+    bool codexEventLogMode_ = false;
     bool followOutlineTailPending_ = false;
     QByteArray followRawBuffer_;
     QByteArray followBoundarySignature_;
@@ -1884,6 +1886,12 @@ public:
         if (key == "saveFailed") return ja ? "保存できませんでした" : "Save failed";
         if (key == "fileMissing") return ja ? "ファイルが見つかりません:\n%1" : "The file no longer exists:\n%1";
         if (key == "opened") return ja ? "開きました: %1" : "Opened %1";
+        if (key == "codexLogTitle") return ja ? "Codex 会話ログ" : "Codex conversation log";
+        if (key == "codexLogUser") return ja ? "ユーザー" : "User";
+        if (key == "codexLogAssistant") return ja ? "エージェント" : "Assistant";
+        if (key == "codexLogEmpty") return ja
+            ? "表示できるユーザーまたはエージェントのメッセージはありません。"
+            : "No user or assistant messages are available to display.";
         if (key == "saved") return ja ? "保存しました: %1" : "Saved %1";
         if (key == "unsavedTitle") return ja ? "未保存の変更" : "Unsaved changes";
         if (key == "unsavedText") return ja ? "ドキュメントに未保存の変更があります。" : "The document has unsaved changes.";
@@ -4063,6 +4071,7 @@ bool DocumentTab::loadFileImpl(const QString &path, bool followMode, bool quiet)
     currentFile_ = path;
     rememberLoadedFile(path, data);
     followMode_ = false;
+    codexEventLogMode_ = false;
     followOutlineTailPending_ = false;
     resumeFollowShortcut_->setEnabled(false);
     updateTranslationModeUi();
@@ -4132,6 +4141,7 @@ bool DocumentTab::loadFollowSnapshot(const QString &path, bool quiet)
         return false;
     }
     followRawBuffer_ = file.read(followMaxBufferBytes_);
+    codexEventLogMode_ = mdv::isCodexEventLog(path, followRawBuffer_);
     followBufferStartOffset_ = start;
     followReadOffset_ = start + followRawBuffer_.size();
     trimFollowRawBuffer();
@@ -4185,6 +4195,14 @@ QString DocumentTab::decodedFollowBuffer(bool *lossy) const
     if (cut > 0) {
         text.remove(0, cut);
     }
+    if (codexEventLogMode_) {
+        text = mdv::renderCodexEventLog(
+            text,
+            window_->uiText("codexLogTitle"),
+            window_->uiText("codexLogUser"),
+            window_->uiText("codexLogAssistant"),
+            window_->uiText("codexLogEmpty"));
+    }
     return text;
 }
 
@@ -4226,7 +4244,13 @@ bool DocumentTab::applyFollowBuffer(const QString &path, bool quiet)
         }
     }
 
-    editor_->setPlainText(text);
+    // Codex writes many bookkeeping and tool events between visible messages.
+    // Avoid rebuilding the WebEngine document for those filtered-only appends,
+    // while still forcing a refresh after an initial load or file rotation.
+    const bool displayNeedsRefresh = editor_->toPlainText() != text || followOutlineTailPending_;
+    if (displayNeedsRefresh) {
+        editor_->setPlainText(text);
+    }
     currentFile_ = path;
     followMode_ = true;
     resumeFollowShortcut_->setEnabled(true);
@@ -4248,7 +4272,9 @@ bool DocumentTab::applyFollowBuffer(const QString &path, bool quiet)
     if (!quiet) {
         window_->addRecentFile(path);
     }
-    updatePreview();
+    if (displayNeedsRefresh) {
+        updatePreview();
+    }
     applyPaneVisibility();
     window_->onTabStateChanged(this);
     if (!quiet) {

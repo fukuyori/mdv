@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(mdv VERSION 0.6.1 LANGUAGES C CXX)
+project(mdv VERSION 0.6.2 LANGUAGES C CXX)
 
 include(CTest)
 
@@ -27,6 +27,7 @@ target_include_directories(md4c PUBLIC third_party/md4c)
 
 if(APPLE)
     add_executable(mdv MACOSX_BUNDLE
+        src/codex_log.cpp
         src/main.cpp
         resources/mdv.qrc
         resources/macos/mdv.icns
@@ -36,12 +37,14 @@ if(APPLE)
     )
 elseif(WIN32)
     add_executable(mdv
+        src/codex_log.cpp
         src/main.cpp
         resources/mdv.qrc
         resources/windows/mdv.rc
     )
 else()
     add_executable(mdv
+        src/codex_log.cpp
         src/main.cpp
         resources/mdv.qrc
     )
@@ -92,4 +95,12 @@ if(BUILD_TESTING)
     add_executable(mdv_security_test tests/security_test.cpp)
     target_link_libraries(mdv_security_test PRIVATE md4c)
     add_test(NAME mdv_security_test COMMAND mdv_security_test)
+
+    add_executable(mdv_codex_log_test
+        tests/codex_log_test.cpp
+        src/codex_log.cpp
+    )
+    target_include_directories(mdv_codex_log_test PRIVATE src)
+    target_link_libraries(mdv_codex_log_test PRIVATE Qt6::Core)
+    add_test(NAME mdv_codex_log_test COMMAND mdv_codex_log_test)
 endif()

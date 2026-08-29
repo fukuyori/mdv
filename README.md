@@ -42,6 +42,8 @@ Viewer mode (`-v`), with the editor pane hidden:
   offers to reload it
 - Follow mode (`-f`) automatically reloads files as they grow and keeps the
   preview pinned to the last line, with the editor pane hidden
+- Codex `rollout-*.jsonl` event logs opened in follow mode are shown as a
+  readable, timestamped conversation containing only user and assistant text
 - Encoding safety: files are read as UTF-8 (UTF-16/32 with BOM are detected
   and preserved on save), and a warning is shown before opening or saving a
   file that did not decode cleanly
@@ -287,6 +289,21 @@ Only newly appended bytes are read after the initial load. The displayed tail
 is bounded to the last 10,000 lines and at most 8 MiB of source data, so memory
 use does not grow with the file; truncation, in-place overwrite, and file
 replacement/rotation rebuild the bounded tail from the new file.
+
+Codex session event logs can be followed directly in the same mode (replace
+the example path with the log shown under `~/.codex/sessions`):
+
+```sh
+./build/mdv -f ~/.codex/sessions/.../rollout-....jsonl
+```
+
+For a Codex `rollout-*.jsonl` file, mdv converts the displayed tail into a
+timestamped conversation. It uses only `response_item` messages whose role is
+`user` or `assistant`; duplicate event notifications, system/developer
+instructions, reasoning, tool calls, and command output are hidden. The source
+JSONL file is never modified. The same 10,000-line and 8 MiB source-tail limits
+apply, so a very large session shows its recent conversation rather than its
+entire history.
 
 Scrolling away from the bottom pauses automatic scrolling, so incoming text
 does not interrupt reading earlier content. Automatic following resumes when
