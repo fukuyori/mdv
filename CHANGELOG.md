@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 English | [日本語](CHANGELOG.ja.md)
 
+## [Unreleased]
+
+### Security
+
+- The preview now only loads local images and media from the document's own
+  directory. A `QWebEngineUrlRequestInterceptor` blocks every other
+  sub-resource request (other local files, `..` escapes, symbolic links that
+  resolve outside the directory, and any non-`file:`/`data:` scheme) before it
+  reaches the network layer, backing up the existing Content Security Policy.
+  The policy lives in `src/preview_policy.cpp` and is covered by the new
+  `mdv_preview_policy_test` CTest target.
+- The QWebChannel bridge validates its arguments: scroll positions must be
+  finite values in range, and copied text is limited to 1 MiB, so page-side
+  state cannot drive unbounded work on the Qt side.
+
 ## [0.6.3] - 2026-08-29
 
 ### Added

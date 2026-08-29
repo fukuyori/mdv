@@ -31,6 +31,7 @@ if(APPLE)
         src/claude_log.cpp
         src/codex_log.cpp
         src/main.cpp
+        src/preview_policy.cpp
         resources/mdv.qrc
         resources/macos/mdv.icns
     )
@@ -43,6 +44,7 @@ elseif(WIN32)
         src/claude_log.cpp
         src/codex_log.cpp
         src/main.cpp
+        src/preview_policy.cpp
         resources/mdv.qrc
         resources/windows/mdv.rc
     )
@@ -52,6 +54,7 @@ else()
         src/claude_log.cpp
         src/codex_log.cpp
         src/main.cpp
+        src/preview_policy.cpp
         resources/mdv.qrc
     )
 endif()
@@ -125,4 +128,12 @@ if(BUILD_TESTING)
     target_include_directories(mdv_antigravity_log_test PRIVATE src)
     target_link_libraries(mdv_antigravity_log_test PRIVATE Qt6::Core)
     add_test(NAME mdv_antigravity_log_test COMMAND mdv_antigravity_log_test)
+
+    add_executable(mdv_preview_policy_test
+        tests/preview_policy_test.cpp
+        src/preview_policy.cpp
+    )
+    target_include_directories(mdv_preview_policy_test PRIVATE src)
+    target_link_libraries(mdv_preview_policy_test PRIVATE Qt6::Core)
+    add_test(NAME mdv_preview_policy_test COMMAND mdv_preview_policy_test)
 endif()

@@ -1,3 +1,5 @@
+#include <cmath>
+
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
@@ -76,6 +78,8 @@
 #include <QVector>
 #include <QWebChannel>
 #include <QWebEnginePage>
+#include <QWebEngineUrlRequestInfo>
+#include <QWebEngineUrlRequestInterceptor>
 #include <QWebEngineSettings>
 #include <QWebEngineView>
 
@@ -87,6 +91,7 @@
 #include "antigravity_log.h"
 #include "claude_log.h"
 #include "codex_log.h"
+#include "preview_policy.h"
 
 #ifndef MDV_VERSION
 #define MDV_VERSION "0.6.3"
@@ -708,9 +713,22 @@ public:
     std::function<void(const QString &)> onCopyText;
     std::function<void()> onExtensionsRendered;
 
+    // The page is rendered from untrusted Markdown. Raw HTML is disabled and
+    // the CSP only runs nonce'd scripts, so page JavaScript is our own; the
+    // bridge still validates every argument so that a bug in that layer
+    // cannot turn into unbounded work or garbage state on the Qt side.
+    static constexpr int kMaxCopyTextLength = 1 << 20;
+    static constexpr int kMaxHeadingCount = 1 << 20;
+
 public slots:
     void previewScrolled(int headingCount, int segment, double t, double fraction)
     {
+        if (headingCount < 0 || headingCount > kMaxHeadingCount
+            || segment < 0 || segment > headingCount
+            || !std::isfinite(t) || t < 0.0 || t > 1.0
+            || !std::isfinite(fraction) || fraction < 0.0 || fraction > 1.0) {
+            return;
+        }
         if (onScrolled) {
             onScrolled(headingCount, segment, t, fraction);
         }
@@ -718,6 +736,9 @@ public slots:
 
     void copyText(const QString &text)
     {
+        if (text.isEmpty() || text.size() > kMaxCopyTextLength) {
+            return;
+        }
         if (onCopyText) {
             onCopyText(text);
         }
@@ -729,6 +750,44 @@ public slots:
             onExtensionsRendered();
         }
     }
+};
+
+// Restricts what the preview page may fetch. The document itself arrives via
+// setHtml, so every other request is a sub-resource referenced from untrusted
+// Markdown. Only images and media loaded from the document's own directory
+// are allowed; everything else (other local files, other schemes, fonts,
+// scripts, frames, XHR) is blocked before it reaches the network layer.
+// This backs up the CSP so that relative images keep working without
+// granting the page general file: access.
+class PreviewRequestInterceptor : public QWebEngineUrlRequestInterceptor {
+public:
+    using QWebEngineUrlRequestInterceptor::QWebEngineUrlRequestInterceptor;
+
+    void setDocumentDirectory(const QString &dir)
+    {
+        documentDir_ = dir;
+    }
+
+    void interceptRequest(QWebEngineUrlRequestInfo &info) override
+    {
+        if (info.resourceType() == QWebEngineUrlRequestInfo::ResourceTypeMainFrame) {
+            return;
+        }
+        const QUrl url = info.requestUrl();
+        if (url.scheme() == QLatin1String("data")) {
+            return;
+        }
+        const auto type = info.resourceType();
+        const bool mediaLike = type == QWebEngineUrlRequestInfo::ResourceTypeImage
+            || type == QWebEngineUrlRequestInfo::ResourceTypeMedia;
+        if (mediaLike && preview_policy::allowsLocalResource(url, documentDir_)) {
+            return;
+        }
+        info.block(true);
+    }
+
+private:
+    QString documentDir_;
 };
 
 // Keeps the preview locked to the document rendered via setHtml: clicked
@@ -1623,6 +1682,7 @@ private:
     QShortcut *resumeFollowShortcut_ = nullptr;
     QString pendingPreviewHtml_;
     QUrl loadedPreviewBaseUrl_;
+    PreviewRequestInterceptor *previewInterceptor_ = nullptr;
     bool previewLoaded_ = false;
     quint64 previewTemplateGeneration_ = 0;
 
@@ -3532,6 +3592,11 @@ DocumentTab::DocumentTab(MainWindow *window, QWidget *parent)
     preview_->settings()->setAttribute(QWebEngineSettings::JavascriptCanOpenWindows, false);
     preview_->settings()->setAttribute(QWebEngineSettings::JavascriptCanAccessClipboard, false);
     preview_->settings()->setAttribute(QWebEngineSettings::LocalStorageEnabled, false);
+    // Relative images need file: access, but only inside the document's own
+    // directory. The interceptor enforces that per request.
+    previewInterceptor_ = new PreviewRequestInterceptor(this);
+    previewInterceptor_->setDocumentDirectory(previewBaseUrl().toLocalFile());
+    preview_->page()->setUrlRequestInterceptor(previewInterceptor_);
     connect(preview_, &QWebEngineView::loadFinished, this, [this](bool ok) {
         if (!ok) {
             return;
@@ -4807,6 +4872,7 @@ void DocumentTab::reloadPreviewTemplate()
     previewLoaded_ = false;
     ++previewTemplateGeneration_;
     loadedPreviewBaseUrl_ = previewBaseUrl();
+    previewInterceptor_->setDocumentDirectory(loadedPreviewBaseUrl_.toLocalFile());
     preview_->setHtml(buildPreviewTemplate(), loadedPreviewBaseUrl_);
 }
 

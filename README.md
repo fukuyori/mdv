@@ -126,7 +126,9 @@ The bundled Highlight.js common-language build and its light, dark, and sepia
 styles work offline. Alert titles are displayed in the selected UI language.
 
 For security, raw HTML is shown as text rather than executed, and remote images
-or other remote resources are not loaded automatically. Open external links
+or other remote resources are not loaded automatically. Local images are only
+loaded from the document's own directory (and its subdirectories); paths that
+escape it, including through symbolic links, are blocked. Open external links
 only after an explicit click. Normal mode accepts files up to 256 MiB; use
 `-f` for larger append-only logs.
 
