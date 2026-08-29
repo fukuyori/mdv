@@ -90,8 +90,6 @@
 #include <QVector>
 #include <QWebChannel>
 #include <QWebEnginePage>
-#include <QWebEngineUrlRequestInfo>
-#include <QWebEngineUrlRequestInterceptor>
 #include <QWebEngineSettings>
 #include <QWebEngineView>
 
@@ -103,6 +101,7 @@
 #include "antigravity_log.h"
 #include "claude_log.h"
 #include "codex_log.h"
+#include "preview_interceptor.h"
 #include "preview_policy.h"
 
 #ifndef MDV_VERSION
@@ -762,44 +761,6 @@ public slots:
             onExtensionsRendered();
         }
     }
-};
-
-// Restricts what the preview page may fetch. The document itself arrives via
-// setHtml, so every other request is a sub-resource referenced from untrusted
-// Markdown. Only images and media loaded from the document's own directory
-// are allowed; everything else (other local files, other schemes, fonts,
-// scripts, frames, XHR) is blocked before it reaches the network layer.
-// This backs up the CSP so that relative images keep working without
-// granting the page general file: access.
-class PreviewRequestInterceptor : public QWebEngineUrlRequestInterceptor {
-public:
-    using QWebEngineUrlRequestInterceptor::QWebEngineUrlRequestInterceptor;
-
-    void setDocumentDirectory(const QString &dir)
-    {
-        documentDir_ = dir;
-    }
-
-    void interceptRequest(QWebEngineUrlRequestInfo &info) override
-    {
-        if (info.resourceType() == QWebEngineUrlRequestInfo::ResourceTypeMainFrame) {
-            return;
-        }
-        const QUrl url = info.requestUrl();
-        if (url.scheme() == QLatin1String("data")) {
-            return;
-        }
-        const auto type = info.resourceType();
-        const bool mediaLike = type == QWebEngineUrlRequestInfo::ResourceTypeImage
-            || type == QWebEngineUrlRequestInfo::ResourceTypeMedia;
-        if (mediaLike && preview_policy::allowsLocalResource(url, documentDir_)) {
-            return;
-        }
-        info.block(true);
-    }
-
-private:
-    QString documentDir_;
 };
 
 // Keeps the preview locked to the document rendered via setHtml: clicked
@@ -5124,11 +5085,7 @@ QString DocumentTab::buildPreviewTemplate() const
     }).toJson(QJsonDocument::Compact);
 
     const QString scriptNonce = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    const QString contentSecurityPolicy = QStringLiteral(
-        "default-src 'none'; img-src file: data:; media-src file: data:; "
-        "style-src 'unsafe-inline'; font-src data:; script-src 'nonce-%1'; "
-        "connect-src 'none'; object-src 'none'; frame-src 'none'; "
-        "base-uri 'none'; form-action 'none'").arg(scriptNonce);
+    const QString contentSecurityPolicy = preview_policy::contentSecurityPolicy(scriptNonce);
 
     return QStringLiteral(
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"

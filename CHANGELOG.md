@@ -44,6 +44,15 @@ English | [日本語](CHANGELOG.ja.md)
   redirects any more, so document text can only reach the endpoint that was
   validated (and, for plain HTTP off-host, confirmed) in the settings; a
   3xx answer is reported as a failed block.
+- New `mdv_preview_webengine_test` CTest target loads a hostile document into
+  a real offscreen WebEngine page configured like the preview (same settings,
+  Content Security Policy, and request interceptor) and verifies that inline
+  scripts and event handlers do not run, that only the image inside the
+  document directory loads, that `fetch`, XHR to `file:`, iframes, objects,
+  stylesheets, WebSocket, and `sendBeacon` are all blocked, and that a local
+  HTTP server the document tries to reach receives no connection. The request
+  interceptor and CSP builder moved into `src/preview_interceptor.*` and
+  `src/preview_policy.*` so the test exercises the production code.
 
 ## [0.6.3] - 2026-08-29
 

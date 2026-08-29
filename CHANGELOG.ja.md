@@ -38,6 +38,14 @@
   取得はHTTPリダイレクトを追従しないようにし、文書本文が設定で検証(ホスト外の
   平文HTTPは確認)済みのエンドポイント以外へ送られないようにした。3xx応答は
   失敗ブロックとして報告する。
+- 新しいCTest `mdv_preview_webengine_test`を追加。プレビューと同じ設定・
+  Content Security Policy・リクエストインターセプターを適用した実機
+  (オフスクリーン)WebEngineページに攻撃用文書を読み込み、インラインスクリプトと
+  イベントハンドラが実行されないこと、文書ディレクトリ内の画像だけが読み込まれる
+  こと、`fetch`・`file:`へのXHR・iframe・object・スタイルシート・WebSocket・
+  `sendBeacon`がすべて遮断されること、文書が到達を試みるローカルHTTPサーバーに
+  接続が届かないことを検証。テストが製品コードを使うよう、インターセプターと
+  CSP生成を`src/preview_interceptor.*`と`src/preview_policy.*`へ分離。
 
 ## [0.6.3] - 2026-08-29
 

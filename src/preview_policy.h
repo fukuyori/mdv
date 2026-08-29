@@ -14,4 +14,9 @@ namespace preview_policy {
 // directory (including through symlinks), and for directories.
 bool allowsLocalResource(const QUrl &url, const QString &documentDir);
 
+// The Content Security Policy applied to the preview document. Only scripts
+// carrying `nonce` run; images and media may come from file:/data: (further
+// narrowed by PreviewRequestInterceptor); everything else is denied.
+QString contentSecurityPolicy(const QString &nonce);
+
 } // namespace preview_policy

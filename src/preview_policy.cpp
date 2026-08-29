@@ -94,4 +94,13 @@ bool allowsLocalResource(const QUrl &url, const QString &documentDir)
     return isUnder(canonical, canonicalDir);
 }
 
+QString contentSecurityPolicy(const QString &nonce)
+{
+    return QStringLiteral(
+        "default-src 'none'; img-src file: data:; media-src file: data:; "
+        "style-src 'unsafe-inline'; font-src data:; script-src 'nonce-%1'; "
+        "connect-src 'none'; object-src 'none'; frame-src 'none'; "
+        "base-uri 'none'; form-action 'none'").arg(nonce);
+}
+
 } // namespace preview_policy

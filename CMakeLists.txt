@@ -31,6 +31,7 @@ if(APPLE)
         src/claude_log.cpp
         src/codex_log.cpp
         src/main.cpp
+        src/preview_interceptor.cpp
         src/preview_policy.cpp
         resources/mdv.qrc
         resources/macos/mdv.icns
@@ -44,6 +45,7 @@ elseif(WIN32)
         src/claude_log.cpp
         src/codex_log.cpp
         src/main.cpp
+        src/preview_interceptor.cpp
         src/preview_policy.cpp
         resources/mdv.qrc
         resources/windows/mdv.rc
@@ -54,6 +56,7 @@ else()
         src/claude_log.cpp
         src/codex_log.cpp
         src/main.cpp
+        src/preview_interceptor.cpp
         src/preview_policy.cpp
         resources/mdv.qrc
     )
@@ -136,4 +139,21 @@ if(BUILD_TESTING)
     target_include_directories(mdv_preview_policy_test PRIVATE src)
     target_link_libraries(mdv_preview_policy_test PRIVATE Qt6::Core)
     add_test(NAME mdv_preview_policy_test COMMAND mdv_preview_policy_test)
+
+    # Loads a hostile document into a real (offscreen) WebEngine page with
+    # the production CSP and request interceptor, and checks that no script
+    # runs, no file outside the document directory is read, and no network
+    # request leaves the page.
+    add_executable(mdv_preview_webengine_test
+        tests/preview_webengine_test.cpp
+        src/preview_interceptor.cpp
+        src/preview_policy.cpp
+    )
+    target_include_directories(mdv_preview_webengine_test PRIVATE src)
+    target_link_libraries(mdv_preview_webengine_test PRIVATE Qt6::WebEngineWidgets Qt6::WebEngineCore Qt6::Network)
+    add_test(NAME mdv_preview_webengine_test COMMAND mdv_preview_webengine_test)
+    set_tests_properties(mdv_preview_webengine_test PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QTWEBENGINE_CHROMIUM_FLAGS=--disable-gpu"
+        TIMEOUT 120
+    )
 endif()
