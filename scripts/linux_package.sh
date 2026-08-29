@@ -17,6 +17,7 @@
 #   DIST_DIR    Output directory        (default: <repo>/dist)
 #   MAINTAINER  .deb Maintainer field   (default: fukuyori <fukuyori.n@gmail.com>)
 #   NO_BUILD=1  Skip building even if the binary is missing (fail instead)
+#   QT_ROOT     Qt prefix (default: Qt 6.11.2 under ~/Qt or /opt/Qt)
 #
 set -euo pipefail
 
@@ -24,6 +25,21 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-"$ROOT_DIR/build-release"}"
 DIST_DIR="${DIST_DIR:-"$ROOT_DIR/dist"}"
 MAINTAINER="${MAINTAINER:-fukuyori <fukuyori.n@gmail.com>}"
+IFS= read -r DEFAULT_QT_VERSION < "$ROOT_DIR/qt-default-version.txt"
+[[ "$DEFAULT_QT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+  printf 'error: invalid qt-default-version.txt: %s\n' "$DEFAULT_QT_VERSION" >&2
+  exit 1
+}
+
+# All recursive cleanup below must remain confined to the repository's dist
+# tree, even when DIST_DIR points through a symlink.
+mkdir -p "$ROOT_DIR/dist" "$DIST_DIR"
+SAFE_DIST_ROOT="$(cd "$ROOT_DIR/dist" && pwd -P)"
+DIST_DIR="$(cd "$DIST_DIR" && pwd -P)"
+case "$DIST_DIR/" in
+  "$SAFE_DIST_ROOT/"*) ;;
+  *) printf 'error: DIST_DIR must be inside %s: %s\n' "$SAFE_DIST_ROOT" "$DIST_DIR" >&2; exit 1 ;;
+esac
 
 BINARY="$BUILD_DIR/mdv"
 DESKTOP_FILE="$ROOT_DIR/resources/linux/mdv.desktop"
@@ -35,6 +51,29 @@ warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 [[ "$(uname -s)" == "Linux" ]] || die "this script only runs on Linux (detected $(uname -s))."
+
+select_qt_root() {
+  if [[ -n "${QT_ROOT:-}" ]]; then
+    return
+  fi
+
+  local candidate
+  local candidates=()
+  if [[ -n "${HOME:-}" ]]; then
+    candidates+=( "$HOME/Qt/$DEFAULT_QT_VERSION/gcc_64" )
+  fi
+  candidates+=(
+    "/opt/Qt/$DEFAULT_QT_VERSION/gcc_64"
+    "/usr/local/Qt/$DEFAULT_QT_VERSION/gcc_64"
+  )
+  for candidate in "${candidates[@]}"; do
+    if [[ -x "$candidate/bin/qt-cmake" ]]; then
+      QT_ROOT="$candidate"
+      return
+    fi
+  done
+  die "default Qt $DEFAULT_QT_VERSION was not found; install it or set QT_ROOT explicitly."
+}
 
 VERSION="$(sed -n 's/^project(.*VERSION \([0-9][0-9.]*\).*/\1/p' "$ROOT_DIR/CMakeLists.txt" | head -n1)"
 [[ -n "$VERSION" ]] || die "could not read version from CMakeLists.txt"
@@ -49,8 +88,9 @@ ensure_binary() {
   if [[ "${NO_BUILD:-0}" == "1" ]]; then
     die "binary not found at $BINARY (NO_BUILD=1 set)."
   fi
+  select_qt_root
   log "Binary not found; running scripts/linux_build_release.sh"
-  BUILD_DIR="$BUILD_DIR" "$ROOT_DIR/scripts/linux_build_release.sh"
+  BUILD_DIR="$BUILD_DIR" QT_ROOT="$QT_ROOT" "$ROOT_DIR/scripts/linux_build_release.sh"
   [[ -x "$BINARY" ]] || die "build finished but $BINARY is missing."
 }
 
@@ -204,10 +244,12 @@ build_appimage() {
   log "Building AppImage"
   stage_tree "$appdir"
 
-  # linuxdeploy-plugin-qt needs to know where Qt lives if qmake isn't on PATH.
+  # Always deploy with the selected Qt instead of a system qmake from PATH.
   local qmake
-  qmake="$(command -v qmake6 || command -v qmake || true)"
-  [[ -n "$qmake" ]] && export QMAKE="$qmake"
+  select_qt_root
+  qmake="$QT_ROOT/bin/qmake"
+  [[ -x "$qmake" ]] || die "selected QT_ROOT does not contain bin/qmake: $QT_ROOT"
+  export QMAKE="$qmake"
   # WebEngine ships a separate helper process that must be bundled explicitly.
   export EXTRA_QT_MODULES="webenginewidgets webenginecore webengine"
 

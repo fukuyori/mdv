@@ -120,14 +120,117 @@ GitHub-style alerts use a blockquote whose first line contains one of
 The bundled Highlight.js common-language build and its light, dark, and sepia
 styles work offline. Alert titles are displayed in the selected UI language.
 
+For security, raw HTML is shown as text rather than executed, and remote images
+or other remote resources are not loaded automatically. Open external links
+only after an explicit click. Normal mode accepts files up to 256 MiB; use
+`-f` for larger append-only logs.
+
 ## Build
 
-Requires Qt with the WebEngine, WebChannel, and Network modules (`brew install qt` on macOS).
+### Requirements
+
+- CMake 3.16 or newer
+- A C++17 compiler
+- Qt 6.10.3 or newer with Widgets, WebEngine, WebChannel, and Network
+
+The current release is built and tested with Qt 6.11.2. When using the Qt
+Online Installer, install the Desktop kit for the compiler you intend to use
+and include Qt WebEngine and Qt WebChannel. The installer resolves their
+additional Qt dependencies. Build and packaging scripts read the shared
+default version from `qt-default-version.txt`.
+
+Qt 6.10.3 is also supported when staying on the 6.10 release series is more
+important than using the newer tested version. Qt 6.10.2 is intentionally not
+accepted because it predates required security fixes.
+
+Do not reuse a build directory that was configured with a different Qt
+installation. Select a new `BUILD_DIR`, as shown below, when changing Qt
+versions.
+
+### Linux
+
+Install CMake, a C++ compiler, and Qt first. Keep the Qt libraries under `/usr` managed by the distribution package
+manager. Do not overwrite them manually with an Online Installer build;
+install a project-specific Qt under your user directory and select it with
+`QT_ROOT`. Upgrade the system Qt only when the distribution provides the new
+version through its normal package updates.
+
+The build script uses `$HOME/Qt/6.11.2/gcc_64` by default, followed by the
+same kit under `/opt/Qt` or `/usr/local/Qt`. It fails instead of silently using
+an older system Qt when none of these paths exists. Build and test a Release
+binary with:
 
 ```sh
-cmake -S . -B build
-cmake --build build
+BUILD_DIR=build-qt6112 \
+scripts/linux_build_release.sh
+
+ctest --test-dir build-qt6112 --output-on-failure
+build-qt6112/mdv --version
 ```
+
+The resulting executable is `build-qt6112/mdv`. `QT_ROOT` must be the Qt kit
+directory containing `bin/qt-cmake`, not the parent version directory. Set it
+only to override the 6.11.2 default, for example to use a separately installed
+Qt 6.10.3:
+
+```sh
+QT_ROOT=/opt/Qt/6.10.3/gcc_64 scripts/linux_build_release.sh
+```
+
+#### Why keep the Qt installations separate?
+
+- APT owns the Qt libraries and plugins under `/usr`. Replacing only part of
+  that package set can mix incompatible libraries, plugins, and WebEngine
+  helper processes while leaving dpkg's installed-file database incorrect.
+- mdv renders untrusted Markdown with Qt WebEngine, so it benefits directly
+  from fixes newer than the distribution's Qt 6.10.2.
+- A separate Qt selected by `QT_ROOT` updates or rolls back mdv without
+  changing the runtime used by other Ubuntu applications. When Ubuntu
+  publishes a newer coherent Qt package set, the system Qt can be upgraded
+  normally through APT.
+
+For a manual CMake build or a non-Release configuration, use:
+
+```sh
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_PREFIX_PATH=/home/user/Qt/6.11.2/gcc_64
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+```
+
+### macOS
+
+Install Qt 6.11.2 with the Qt Online Installer under `$HOME/Qt`. The release
+script selects `$HOME/Qt/6.11.2/macos` by default:
+
+```sh
+scripts/macos_build_release.sh
+ctest --test-dir build-release --output-on-failure
+open build-release/mdv.app
+```
+
+Set `QT_ROOT` explicitly when using Homebrew or another Qt prefix:
+
+```sh
+brew install qt cmake
+QT_ROOT="$(brew --prefix qt)" scripts/macos_build_release.sh
+```
+
+### Windows
+
+Install Qt 6.10.3 or newer and either its MSVC or MinGW 64-bit Desktop kit.
+The script selects a kit under `C:\Qt\6.11.2` by default:
+
+```powershell
+.\scripts\build-windows.ps1
+ctest --test-dir build-windows-release -C Release --output-on-failure
+dist\mdv-windows-x64\mdv.exe --version
+```
+
+The Windows script builds the application and runs `windeployqt`; the deployed
+application is written to `dist\mdv-windows-x64`. Pass `-QtDir` to override
+the default kit.
 
 ## Run
 

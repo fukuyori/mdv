@@ -6,3 +6,6 @@ build-icon-renderer/
 dist/
 resources/macos/*.iconset/
 .DS_Store
+/AGENTS.md
+/agents.md
+/agent-results.md

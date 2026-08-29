@@ -1,12 +1,11 @@
 # Shared Authenticode signing helpers for the Windows build/packaging scripts.
 #
 # The signing certificate is taken from the CODESIGN_CERT environment variable:
-#   * a path to a .pfx/.p12/.cer file (password from CODESIGN_CERT_PASSWORD)
+#   * a path to an unencrypted certificate file
 #   * a certificate SHA1 thumbprint from the current user/machine store
 #   * a certificate subject name from the current user/machine store
 #
 # Optional environment variables:
-#   CODESIGN_CERT_PASSWORD  password for the certificate file
 #   CODESIGN_TIMESTAMP_URL  RFC 3161 timestamp server (default: DigiCert)
 #   CODESIGN_DIGEST         file/timestamp digest algorithm (default: sha256)
 #   CODESIGN_CSP            cryptographic provider (hardware tokens)
@@ -83,7 +82,7 @@ function Get-CodeSignSettings {
         $description = $certPath
         $arguments += @("/f", $certPath)
         if ($env:CODESIGN_CERT_PASSWORD) {
-            $arguments += @("/p", $env:CODESIGN_CERT_PASSWORD)
+            throw "Password-protected certificate files are not accepted because signtool exposes /p arguments to other processes. Import the certificate into the Windows certificate store and set CODESIGN_CERT to its SHA1 thumbprint, or use a hardware-backed key."
         }
         if ($env:CODESIGN_CSP) {
             $arguments += @("/csp", $env:CODESIGN_CSP)

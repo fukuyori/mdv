@@ -116,14 +116,115 @@ GitHub 形式のアラートは、引用ブロックの先頭行へ `NOTE`、`TI
 同梱の Highlight.js 共通言語ビルドとライト・ダーク・セピア用スタイルにより、
 オフラインで動作します。アラートの見出しは選択中のUI言語で表示します。
 
+セキュリティのため、生HTMLは実行せずテキストとして表示し、外部画像などの
+リモートリソースは自動取得しません。外部リンクは明示的にクリックした場合のみ
+開きます。通常モードで開けるファイルは256 MiBまでです。それを超える追記型
+ログには`-f`を使用してください。
+
 ## ビルド
 
-WebEngine、WebChannel、Network モジュールを含む Qt が必要です(macOS では `brew install qt`)。
+### 必要な環境
+
+- CMake 3.16以降
+- C++17対応コンパイラ
+- Widgets、WebEngine、WebChannel、Networkを含むQt 6.10.3以降
+
+現行リリースはQt 6.11.2でビルド・テストしています。Qt Online
+Installerを使う場合は、使用するコンパイラに合うDesktopキットとQt
+WebEngine、Qt WebChannelを選択してください。追加のQt依存モジュールは
+インストーラーが解決します。ビルド・配布スクリプトは共通の
+`qt-default-version.txt`から既定バージョンを読み込みます。
+
+6.10系からの変更幅を抑えたい場合はQt 6.10.3も利用できます。必要な
+セキュリティ修正より前のQt 6.10.2は、意図的に対応対象外としています。
+
+別のQtで構成済みのビルドディレクトリは再利用しないでください。Qtの
+バージョンを切り替える場合は、以下のように新しい`BUILD_DIR`を指定します。
+
+### Linux
+
+先にCMake、C++コンパイラ、Qtをインストールします。`/usr`配下のQtはOSの
+パッケージマネージャーに管理させてください。Qt Online
+Installerで取得したQtで手動上書きせず、ユーザーディレクトリへプロジェクト用
+Qtを並行導入して`QT_ROOT`で選択します。OS管理のQtは、ディストリビューションが
+新バージョンを正式提供した時点で通常のOS更新として更新します。
+
+ビルドスクリプトは既定で`$HOME/Qt/6.11.2/gcc_64`を選択し、次に
+`/opt/Qt`、`/usr/local/Qt`下の同じキットを探します。見つからない場合は、
+古いシステムQtを黙って使わずエラーにします。Releaseビルドとテスト手順は
+次の通りです。
 
 ```sh
-cmake -S . -B build
-cmake --build build
+BUILD_DIR=build-qt6112 \
+scripts/linux_build_release.sh
+
+ctest --test-dir build-qt6112 --output-on-failure
+build-qt6112/mdv --version
 ```
+
+実行ファイルは`build-qt6112/mdv`に作成されます。`QT_ROOT`にはバージョンの
+親ディレクトリではなく、`bin/qt-cmake`を含むQtキットディレクトリを
+指定してください。6.11.2の既定値を上書きする場合だけ指定します。
+例えば、分離導入したQt 6.10.3を使う場合は次の通りです。
+
+```sh
+QT_ROOT=/opt/Qt/6.10.3/gcc_64 scripts/linux_build_release.sh
+```
+
+#### Qtを分離導入する理由
+
+- `/usr`配下のQtライブラリとプラグインはAPTの管理対象です。一部だけを
+  置換すると、互換性のないライブラリ、プラグイン、WebEngineヘルパーが
+  混在し、dpkgのファイル管理情報とも食い違います。
+- mdvはQt WebEngineで未信頼のMarkdownを表示するため、ディストリビューションの
+  Qt 6.10.2より新しい修正の効果を直接受けます。
+- `QT_ROOT`で分離導入したQtを選べば、他のUbuntuアプリが使うQtを変更せずに
+  mdvだけを更新・ロールバックできます。Ubuntuが新しい整合済みQtパッケージを
+  公開した後は、OS側をAPTで通常通り更新できます。
+
+手動のCMakeビルド、またはRelease以外の構成でビルドする場合は、
+次のように実行します。
+
+```sh
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_PREFIX_PATH=/home/user/Qt/6.11.2/gcc_64
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+```
+
+### macOS
+
+Qt Online InstallerでQt 6.11.2を`$HOME/Qt`下へ導入します。Releaseビルド
+スクリプトは既定で`$HOME/Qt/6.11.2/macos`を選択します。
+
+```sh
+scripts/macos_build_release.sh
+ctest --test-dir build-release --output-on-failure
+open build-release/mdv.app
+```
+
+Homebrewまたは別のQtプレフィックスを使う場合は`QT_ROOT`を明示します。
+
+```sh
+brew install qt cmake
+QT_ROOT="$(brew --prefix qt)" scripts/macos_build_release.sh
+```
+
+### Windows
+
+Qt 6.10.3以降と、MSVCまたはMinGWの64 bit Desktopキットを導入します。
+PowerShell用スクリプトは既定で`C:\Qt\6.11.2`下のキットを選択します。
+
+```powershell
+.\scripts\build-windows.ps1
+ctest --test-dir build-windows-release -C Release --output-on-failure
+dist\mdv-windows-x64\mdv.exe --version
+```
+
+Windows用スクリプトはビルド後に`windeployqt`を実行し、
+`dist\mdv-windows-x64`へQtランタイムを含む実行環境を配置します。既定キットを
+上書きする場合は`-QtDir`を指定します。
 
 ## 実行
 

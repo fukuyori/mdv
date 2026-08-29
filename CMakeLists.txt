@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.16)
 
 project(mdv VERSION 0.6.0 LANGUAGES C CXX)
 
+include(CTest)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
@@ -12,8 +14,9 @@ if(WIN32)
     enable_language(RC)
 endif()
 
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets WebEngineWidgets WebChannel Network)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets WebEngineWidgets WebChannel Network)
+set(MDV_MIN_QT_VERSION 6.10.3)
+find_package(Qt6 ${MDV_MIN_QT_VERSION} REQUIRED
+    COMPONENTS Widgets WebEngineWidgets WebChannel Network)
 
 add_library(md4c STATIC
     third_party/md4c/md4c.c
@@ -45,13 +48,30 @@ else()
 endif()
 
 target_link_libraries(mdv PRIVATE
-    Qt${QT_VERSION_MAJOR}::Widgets
-    Qt${QT_VERSION_MAJOR}::WebEngineWidgets
-    Qt${QT_VERSION_MAJOR}::WebChannel
-    Qt${QT_VERSION_MAJOR}::Network
+    Qt6::Widgets
+    Qt6::WebEngineWidgets
+    Qt6::WebChannel
+    Qt6::Network
     md4c
 )
 target_compile_definitions(mdv PRIVATE MDV_VERSION="${PROJECT_VERSION}")
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(mdv PRIVATE
+        -Wall -Wextra -Wpedantic
+        -fstack-protector-strong
+    )
+    target_compile_options(md4c PRIVATE -fstack-protector-strong)
+    target_compile_definitions(mdv PRIVATE
+        $<$<CONFIG:Release>:_FORTIFY_SOURCE=3>
+    )
+    target_compile_definitions(md4c PRIVATE
+        $<$<CONFIG:Release>:_FORTIFY_SOURCE=3>
+    )
+    if(UNIX AND NOT APPLE)
+        target_link_options(mdv PRIVATE -Wl,-z,relro -Wl,-z,now)
+    endif()
+endif()
 
 set_target_properties(mdv PROPERTIES
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/resources/macos/Info.plist.in"
@@ -66,6 +86,10 @@ if(WIN32)
     set_target_properties(mdv PROPERTIES WIN32_EXECUTABLE ON)
 endif()
 
-if(QT_VERSION_MAJOR EQUAL 6)
-    qt_finalize_executable(mdv)
+qt_finalize_executable(mdv)
+
+if(BUILD_TESTING)
+    add_executable(mdv_security_test tests/security_test.cpp)
+    target_link_libraries(mdv_security_test PRIVATE md4c)
+    add_test(NAME mdv_security_test COMMAND mdv_security_test)
 endif()

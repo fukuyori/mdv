@@ -23,6 +23,41 @@ English | [日本語](CHANGELOG.ja.md)
   scrolling without losing the reading position; reaching the bottom or
   pressing `Esc` resumes following the latest content.
 
+### Security
+
+- Raw HTML in Markdown is now escaped instead of inserted into the active
+  WebEngine DOM. The preview also applies a Content Security Policy and blocks
+  automatic remote-resource access, clipboard JavaScript, and local storage.
+- Updated Highlight.js from 11.11.1 to 11.12.0 to fix the XML grammar ReDoS;
+  code blocks above 100,000 characters are still left unhighlighted as a
+  general preview-availability safeguard.
+- Updated the bundled MD4C parser from 0.5.2 to 0.5.3, including protections
+  for pathological link-reference expansion, quadratic line lookup, and unsafe
+  error paths.
+- Single-instance IPC now uses per-user socket permissions, a stable per-user
+  name, a 1 MiB message limit, and strict payload/path validation.
+- Translation jobs retain their original endpoint/model/language, response
+  bodies are bounded, invalid endpoint URLs are rejected, and plaintext remote
+  endpoints require confirmation.
+- Saving compares the backing file against its load-time SHA-256 digest before
+  overwriting, and image paste refuses an existing `assets` symlink.
+- Normal mode refuses files above 256 MiB and directs users to bounded follow
+  mode. Packaging cleanup is confined to the repository `dist` directory, and
+  Windows signing no longer accepts passwords that would appear in process
+  command-line arguments.
+
+### Changed
+
+- Added compiler hardening flags and an automated security regression test for
+  raw HTML and pathological link-reference expansion.
+- Raised the minimum supported Qt version to 6.10.3, verified release builds
+  with Qt 6.11.2, and added `QT_ROOT` selection to the Linux and macOS release
+  build scripts.
+- Release build and AppImage scripts now select Qt 6.11.2 by default and fail
+  instead of silently falling back to an older system Qt; explicit Qt path
+  overrides remain available on every platform. All scripts share the default
+  through `qt-default-version.txt`.
+
 ## [0.5.3] - 2026-08-06
 
 ### Added

@@ -6,6 +6,7 @@
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QCommandLineParser>
+#include <QCryptographicHash>
 #include <QDataStream>
 #include <QDateTime>
 #include <QDesktopServices>
@@ -70,6 +71,7 @@
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QUrl>
+#include <QUuid>
 #include <QVBoxLayout>
 #include <QVector>
 #include <QWebChannel>
@@ -104,7 +106,9 @@ static QString markdownToHtml(const QString &markdown)
             static_cast<QByteArray *>(userdata)->append(text, qsizetype(size));
         },
         &html,
-        MD_DIALECT_GITHUB | MD_FLAG_LATEXMATHSPANS,
+        // The preview is an active WebEngine page. Raw HTML from an opened
+        // document must never become DOM nodes in that page.
+        MD_DIALECT_GITHUB | MD_FLAG_LATEXMATHSPANS | MD_FLAG_NOHTML,
         0);
 
     return QString::fromUtf8(html);
@@ -241,6 +245,26 @@ static QString cleanedEndpoint(const QString &endpoint)
         cleaned.chop(1);
     }
     return cleaned.isEmpty() ? defaultOllamaEndpoint() : cleaned;
+}
+
+static bool isValidTranslationEndpoint(const QString &endpoint)
+{
+    const QUrl url(cleanedEndpoint(endpoint));
+    const QString scheme = url.scheme().toLower();
+    return url.isValid()
+        && (scheme == QLatin1String("http") || scheme == QLatin1String("https"))
+        && !url.host().isEmpty()
+        && url.userInfo().isEmpty()
+        && !url.hasQuery()
+        && !url.hasFragment();
+}
+
+static bool isLocalTranslationEndpoint(const QString &endpoint)
+{
+    const QString host = QUrl(cleanedEndpoint(endpoint)).host().toLower();
+    return host == QLatin1String("localhost")
+        || host == QLatin1String("127.0.0.1")
+        || host == QLatin1String("::1");
 }
 
 static QString defaultEditorFontFamily()
@@ -485,6 +509,14 @@ static QString previewScript()
         "  for (var i = 0; i < blocks.length; i++) {"
         "    var code = blocks[i];"
         "    if (code.classList.contains('language-mermaid')) continue;"
+        "    var source = code.textContent || '';"
+        "    if (source.length > 100000) continue;"
+        "    var language = '';"
+        "    for (var j = 0; j < code.classList.length; j++) {"
+        "      var match = code.classList[j].match(/^(?:lang|language)-(.+)$/i);"
+        "      if (match) { language = match[1].toLowerCase(); break; }"
+        "    }"
+        "    if (!language) continue;"
         "    try { globalThis.hljs.highlightElement(code); } catch (error) {}"
         "  }"
         "}"
@@ -755,7 +787,9 @@ public:
 
     void requestTranslation(const QString &key, const QString &markdown, bool urgent = false)
     {
-        queue_.append({key, markdown, urgent});
+        // Snapshot all routing information with the text. A settings change
+        // must not redirect already queued document contents elsewhere.
+        queue_.append({key, markdown, endpoint_, model_, targetLanguage_, urgent});
         if (urgent) {
             std::stable_partition(queue_.begin(), queue_.end(),
                 [](const Job &job) { return job.urgent; });
@@ -786,12 +820,11 @@ public:
     void cancelAll()
     {
         queue_.clear();
-        cancelling_ = true;
         const QList<QNetworkReply *> active = active_.values();
         for (QNetworkReply *reply : active) {
+            cancelled_.insert(reply);
             reply->abort();
         }
-        cancelling_ = false;
     }
 
     // Cancels only jobs matching the given keys (queued or in flight),
@@ -805,13 +838,12 @@ public:
         queue_.erase(std::remove_if(queue_.begin(), queue_.end(),
             [&keys](const Job &job) { return keys.contains(job.key); }), queue_.end());
 
-        cancelling_ = true;
         for (auto it = activeKeys_.constBegin(); it != activeKeys_.constEnd(); ++it) {
             if (keys.contains(it.value())) {
+                cancelled_.insert(it.key());
                 it.key()->abort();
             }
         }
-        cancelling_ = false;
     }
 
 signals:
@@ -823,6 +855,9 @@ private:
     struct Job {
         QString key;
         QString text;
+        QString endpoint;
+        QString model;
+        QString targetLanguage;
         bool urgent = false;
     };
 
@@ -835,29 +870,47 @@ private:
 
     void sendOne(const Job &job)
     {
-        QNetworkRequest request(QUrl(endpoint_ + "/api/chat"));
+        QNetworkRequest request(QUrl(job.endpoint + "/api/chat"));
         request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
         const QJsonObject payload{
-            {"model", model_},
+            {"model", job.model},
             {"stream", false},
             {"messages", QJsonArray{
-                QJsonObject{{"role", "system"}, {"content", systemPrompt()}},
+                QJsonObject{{"role", "system"}, {"content", systemPrompt(job.targetLanguage)}},
                 QJsonObject{{"role", "user"}, {"content", job.text}},
             }},
             {"options", QJsonObject{{"temperature", 0.2}}},
         };
 
         QNetworkReply *reply = manager_->post(request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+        reply->setReadBufferSize(maxResponseBytes_ + 1);
         active_.insert(reply);
         activeKeys_.insert(reply, job.key);
+        const auto abortOversized = [this, reply] {
+            const qint64 contentLength = reply->header(QNetworkRequest::ContentLengthHeader).toLongLong();
+            if (contentLength > maxResponseBytes_ || reply->bytesAvailable() > maxResponseBytes_) {
+                oversized_.insert(reply);
+                reply->abort();
+            }
+        };
+        connect(reply, &QNetworkReply::metaDataChanged, this, abortOversized);
+        connect(reply, &QIODevice::readyRead, this, abortOversized);
         connect(reply, &QNetworkReply::finished, this, [this, job, reply] {
             active_.remove(reply);
             activeKeys_.remove(reply);
+            const bool wasCancelled = cancelled_.remove(reply) > 0;
+            const bool wasOversized = oversized_.remove(reply) > 0;
             reply->deleteLater();
 
             // Deliberate cancellation (mode switch, shutdown): drop silently.
-            if (reply->error() == QNetworkReply::OperationCanceledError && cancelling_) {
+            if (wasCancelled) {
+                fillSlots();
+                return;
+            }
+            if (wasOversized || reply->bytesAvailable() > maxResponseBytes_) {
+                emit blockFailed(job.key, QStringLiteral("response exceeds 8 MiB limit"));
+                fillSlots();
                 return;
             }
 
@@ -905,7 +958,7 @@ private:
             || error == QNetworkReply::ProtocolInvalidOperationError;
     }
 
-    QString systemPrompt() const
+    static QString systemPrompt(const QString &targetLanguage)
     {
         return QStringLiteral(
             "You are a professional translator. Translate the Markdown fragment "
@@ -914,13 +967,15 @@ private:
             "URLs, image paths, and HTML tags exactly as they are. Do not translate "
             "the contents of code spans, code blocks, diagrams, or math spans. "
             "Output only the translated Markdown, with no explanations or preamble.")
-            .arg(targetLanguage_);
+            .arg(targetLanguage);
     }
 
+    static constexpr qint64 maxResponseBytes_ = 8 * 1024 * 1024;
     QNetworkAccessManager *manager_ = nullptr;
     QSet<QNetworkReply *> active_;
     QHash<QNetworkReply *, QString> activeKeys_;
-    bool cancelling_ = false;
+    QSet<QNetworkReply *> cancelled_;
+    QSet<QNetworkReply *> oversized_;
     int maxInFlight_ = 2;
     QList<Job> queue_;
     QString endpoint_;
@@ -1315,6 +1370,9 @@ public:
         encodingLossy_ = false;
         documentModified_ = false;
         pendingExternalChange_ = false;
+        externalConflict_ = false;
+        loadedFileSize_ = -1;
+        loadedFileDigest_.clear();
         watchCurrentFile();
         updateOutline();
         updatePreview();
@@ -1417,6 +1475,47 @@ private:
     void reloadFollowedFile();
     bool pasteImageFromClipboard(const QMimeData *mimeData);
     bool pasteImageFileFromClipboard(const QMimeData *mimeData);
+
+    static QByteArray fileDigest(const QString &path, qint64 expectedSize)
+    {
+        QFile file(path);
+        if (expectedSize < 0 || !file.open(QIODevice::ReadOnly)) {
+            return {};
+        }
+        QCryptographicHash hash(QCryptographicHash::Sha256);
+        qint64 total = 0;
+        while (total <= expectedSize && !file.atEnd()) {
+            const QByteArray chunk = file.read(qMin<qint64>(64 * 1024, expectedSize - total + 1));
+            if (chunk.isEmpty()) {
+                return total == expectedSize && file.atEnd() ? hash.result() : QByteArray();
+            }
+            total += chunk.size();
+            hash.addData(chunk);
+        }
+        return total == expectedSize && file.atEnd() ? hash.result() : QByteArray();
+    }
+
+    void rememberLoadedFile(const QString &path, const QByteArray &data)
+    {
+        const QFileInfo info(path);
+        loadedFileSize_ = info.size();
+        loadedFileDigest_ = QCryptographicHash::hash(data, QCryptographicHash::Sha256);
+    }
+
+    void rememberLoadedFile(const QString &path)
+    {
+        const QFileInfo info(path);
+        loadedFileSize_ = info.exists() ? info.size() : -1;
+        loadedFileDigest_ = info.exists() ? fileDigest(path, loadedFileSize_) : QByteArray();
+    }
+
+    bool backingFileChanged(const QString &path) const
+    {
+        const QFileInfo info(path);
+        return !info.exists() || info.size() != loadedFileSize_
+            || loadedFileDigest_.isEmpty()
+            || fileDigest(path, loadedFileSize_) != loadedFileDigest_;
+    }
 
     void reloadPreviewTemplate();
     void initializePreviewExtensions();
@@ -1529,6 +1628,8 @@ private:
     QStringConverter::Encoding fileEncoding_ = QStringConverter::Utf8;
     bool encodingLossy_ = false;
     bool documentModified_ = false;
+    qint64 loadedFileSize_ = -1;
+    QByteArray loadedFileDigest_;
     bool syncingEditorFromPreview_ = false;
     bool followMode_ = false;
     QByteArray followRawBuffer_;
@@ -1545,6 +1646,7 @@ private:
 
     QFileSystemWatcher *fileWatcher_ = nullptr;
     bool pendingExternalChange_ = false;
+    bool externalConflict_ = false;
     bool suppressNextExternalChange_ = false;
     bool externalChangeCheckInProgress_ = false;
 
@@ -1789,6 +1891,9 @@ public:
               "「保存」を選ぶとその変更を上書きします。「破棄」を選ぶと自分の変更を破棄し、外部の変更をそのまま残します。"
             : "This file was also changed by another program.\n"
               "Save will overwrite that external change; Discard will drop your edits and leave the external version as-is.";
+        if (key == "saveConflictText") return ja
+            ? "このファイルは読み込み後に別のプログラムによって変更されています。外部の変更を上書きしますか?"
+            : "This file changed in another program after it was loaded. Overwrite the external changes?";
         if (key == "externalChangeTitle") return ja ? "ファイルが変更されました" : "File changed on disk";
         if (key == "externalChangeText") return ja
             ? "%1 は他のプログラムによって変更されました。再読み込みしますか?"
@@ -1810,6 +1915,9 @@ public:
         if (key == "largeFileText") return ja
             ? "ファイルサイズが大きいため、開くのに時間がかかる場合があります (%1 MB)。開きますか?"
             : "This file is large (%1 MB) and may take a while to open. Open anyway?";
+        if (key == "fileTooLargeText") return ja
+            ? "このファイルは通常モードの上限である 256 MiB を超えています。-f モードで開いてください。"
+            : "This file exceeds the 256 MiB normal-mode limit. Open it in -f mode instead.";
         if (key == "encodingTitle") return ja ? "文字コードの警告" : "Encoding warning";
         if (key == "encodingText") return ja
             ? "このファイルは UTF-8 として正しく読み込めませんでした(Shift-JIS などの可能性があります)。\n文字化けした状態で開きます。このまま上書き保存すると元の内容が失われる可能性があります。\n開きますか?"
@@ -1840,6 +1948,12 @@ public:
         if (key == "trModel") return ja ? "モデル:" : "Model:";
         if (key == "trTarget") return ja ? "翻訳先の言語:" : "Target language:";
         if (key == "trParallel") return ja ? "同時リクエスト数:" : "Parallel requests:";
+        if (key == "trInvalidEndpoint") return ja
+            ? "翻訳エンドポイントには、ユーザー情報・クエリ・フラグメントを含まない有効な http または https URL を指定してください。"
+            : "Enter a valid HTTP or HTTPS translation endpoint without user info, a query, or a fragment.";
+        if (key == "trInsecureEndpoint") return ja
+            ? "このリモート翻訳エンドポイントは暗号化されていません。文書内容が平文で送信されます。続行しますか?"
+            : "This remote translation endpoint is not encrypted. Document contents will be sent in plaintext. Continue?";
         if (key == "trPending") return ja ? "(翻訳中...)" : "(translating...)";
         if (key == "trFailedBlock") return ja ? "(翻訳失敗)" : "(translation failed)";
         if (key == "translating") return ja ? "翻訳中... 残り %1" : "Translating... %1 remaining";
@@ -1894,6 +2008,7 @@ public:
     QString saveDialogDir() const { return saveDialogDir_; }
     void setSaveDialogDir(const QString &dir) { saveDialogDir_ = dir; }
     qint64 largeFileWarningBytes() const { return largeFileWarningBytes_; }
+    qint64 hardFileLimitBytes() const { return hardFileLimitBytes_; }
     QString editorFontFamily() const { return editorFontFamily_; }
     QString previewFontFamily() const { return previewFontFamily_; }
     int minFontSize() const { return minFontSize_; }
@@ -2055,7 +2170,22 @@ public:
 
         auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
         layout->addWidget(buttons, 4, 0, 1, 2);
-        connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::accepted, &dialog, [this, &dialog, endpointEdit] {
+            const QString endpoint = cleanedEndpoint(endpointEdit->text());
+            if (!isValidTranslationEndpoint(endpoint)) {
+                QMessageBox::warning(&dialog, uiText("trSettingsTitle"), uiText("trInvalidEndpoint"));
+                return;
+            }
+            if (QUrl(endpoint).scheme() == QLatin1String("http") && !isLocalTranslationEndpoint(endpoint)) {
+                const auto answer = QMessageBox::warning(
+                    &dialog, uiText("trSettingsTitle"), uiText("trInsecureEndpoint"),
+                    QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
+                if (answer != QMessageBox::Yes) {
+                    return;
+                }
+            }
+            dialog.accept();
+        });
         connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
 
         // Offer the models installed on the server; the combo stays editable
@@ -2063,10 +2193,25 @@ public:
         auto *manager = new QNetworkAccessManager(&dialog);
         const auto fetchModels = [manager, modelCombo, endpointEdit] {
             const QString base = cleanedEndpoint(endpointEdit->text());
+            if (!isValidTranslationEndpoint(base)) {
+                return;
+            }
             QNetworkReply *reply = manager->get(QNetworkRequest(QUrl(base + "/api/tags")));
+            constexpr qint64 maxModelListBytes = 2 * 1024 * 1024;
+            reply->setReadBufferSize(maxModelListBytes + 1);
+            const auto abortOversized = [reply, maxModelListBytes] {
+                const qint64 contentLength = reply->header(QNetworkRequest::ContentLengthHeader).toLongLong();
+                if (contentLength > maxModelListBytes || reply->bytesAvailable() > maxModelListBytes) {
+                    reply->abort();
+                }
+            };
+            QObject::connect(reply, &QNetworkReply::metaDataChanged, reply, abortOversized);
+            QObject::connect(reply, &QIODevice::readyRead, reply, abortOversized);
             QObject::connect(reply, &QNetworkReply::finished, modelCombo, [reply, modelCombo] {
                 reply->deleteLater();
-                if (reply->error() != QNetworkReply::NoError) {
+                constexpr qint64 maxModelListBytes = 2 * 1024 * 1024;
+                if (reply->error() != QNetworkReply::NoError
+                    || reply->bytesAvailable() > maxModelListBytes) {
                     return;
                 }
                 const QJsonArray models = QJsonDocument::fromJson(reply->readAll())
@@ -3263,6 +3408,7 @@ private:
     QStringList recentFiles_;
     static constexpr int maxRecentFiles_ = 10;
     static constexpr qint64 largeFileWarningBytes_ = 10 * 1024 * 1024;
+    static constexpr qint64 hardFileLimitBytes_ = 256 * 1024 * 1024;
     static constexpr int defaultFontSize_ = 13;
     static constexpr int minFontSize_ = 9;
     static constexpr int maxFontSize_ = 28;
@@ -3365,9 +3511,12 @@ DocumentTab::DocumentTab(MainWindow *window, QWidget *parent)
         menu->setAttribute(Qt::WA_DeleteOnClose);
         menu->popup(preview_->mapToGlobal(pos));
     });
-    // Remote images (README badges etc.) referenced from the local page.
-    preview_->settings()->setAttribute(QWebEngineSettings::LocalContentCanAccessRemoteUrls, true);
+    // An opened Markdown file is untrusted input. Do not let it trigger
+    // network requests (tracking images, localhost probes, or exfiltration).
+    preview_->settings()->setAttribute(QWebEngineSettings::LocalContentCanAccessRemoteUrls, false);
     preview_->settings()->setAttribute(QWebEngineSettings::JavascriptCanOpenWindows, false);
+    preview_->settings()->setAttribute(QWebEngineSettings::JavascriptCanAccessClipboard, false);
+    preview_->settings()->setAttribute(QWebEngineSettings::LocalStorageEnabled, false);
     connect(preview_, &QWebEngineView::loadFinished, this, [this](bool ok) {
         if (!ok) {
             return;
@@ -3837,6 +3986,13 @@ bool DocumentTab::loadFileImpl(const QString &path, bool followMode, bool quiet)
     }
 
     const QFileInfo info(path);
+    if (!followMode && info.size() > window_->hardFileLimitBytes()) {
+        if (!quiet) {
+            QMessageBox::warning(
+                window_, window_->uiText("largeFileTitle"), window_->uiText("fileTooLargeText"));
+        }
+        return false;
+    }
     if (!quiet && info.size() > window_->largeFileWarningBytes()) {
         const auto answer = QMessageBox::question(
             window_,
@@ -3857,7 +4013,14 @@ bool DocumentTab::loadFileImpl(const QString &path, bool followMode, bool quiet)
         return false;
     }
 
-    const QByteArray data = file.readAll();
+    const QByteArray data = file.read(window_->hardFileLimitBytes() + 1);
+    if (data.size() > window_->hardFileLimitBytes() || !file.atEnd()) {
+        if (!quiet) {
+            QMessageBox::warning(
+                window_, window_->uiText("largeFileTitle"), window_->uiText("fileTooLargeText"));
+        }
+        return false;
+    }
 
     // Decode by BOM when present (UTF-16/32), otherwise expect UTF-8 and
     // warn before showing (and potentially saving) a lossy round-trip.
@@ -3884,6 +4047,7 @@ bool DocumentTab::loadFileImpl(const QString &path, bool followMode, bool quiet)
 
     editor_->setPlainText(text);
     currentFile_ = path;
+    rememberLoadedFile(path, data);
     followMode_ = false;
     resumeFollowShortcut_->setEnabled(false);
     updateTranslationModeUi();
@@ -3904,6 +4068,7 @@ bool DocumentTab::loadFileImpl(const QString &path, bool followMode, bool quiet)
     encodingLossy_ = lossy;
     documentModified_ = false;
     pendingExternalChange_ = false;
+    externalConflict_ = false;
     watchCurrentFile();
     if (!quiet) {
         window_->addRecentFile(path);
@@ -4058,6 +4223,7 @@ bool DocumentTab::applyFollowBuffer(const QString &path, bool quiet)
     encodingLossy_ = lossy;
     documentModified_ = false;
     pendingExternalChange_ = false;
+    externalConflict_ = false;
     watchCurrentFile();
     if (!quiet) {
         window_->addRecentFile(path);
@@ -4177,6 +4343,16 @@ bool DocumentTab::writeFile(const QString &path)
     if (followMode_) {
         return false;
     }
+    const bool overwritesCurrentFile = !currentFile_.isEmpty()
+        && QFileInfo(path).absoluteFilePath() == QFileInfo(currentFile_).absoluteFilePath();
+    if (overwritesCurrentFile && backingFileChanged(path)) {
+        const auto answer = QMessageBox::warning(
+            window_, window_->uiText("externalChangeTitle"), window_->uiText("saveConflictText"),
+            QMessageBox::Save | QMessageBox::Cancel, QMessageBox::Cancel);
+        if (answer != QMessageBox::Save) {
+            return false;
+        }
+    }
     if (encodingLossy_) {
         const auto answer = QMessageBox::warning(
             window_,
@@ -4214,10 +4390,12 @@ bool DocumentTab::writeFile(const QString &path)
     }
 
     currentFile_ = path;
+    rememberLoadedFile(path);
     window_->setLastDialogDir(QFileInfo(path).absolutePath());
     window_->setSaveDialogDir(QFileInfo(path).absolutePath());
     documentModified_ = false;
     pendingExternalChange_ = false;
+    externalConflict_ = false;
     watchCurrentFile();
     window_->addRecentFile(path);
     window_->onTabStateChanged(this);
@@ -4236,7 +4414,7 @@ bool DocumentTab::confirmDiscardChanges()
     // If the file also changed on disk and the reload was declined, spell
     // out what Save/Discard mean here: Save overwrites that external change,
     // Discard abandons the local edits and leaves the external version as-is.
-    const QString text = pendingExternalChange_
+    const QString text = externalConflict_
         ? window_->uiText("unsavedExternalText")
         : window_->uiText("unsavedText");
 
@@ -4280,6 +4458,7 @@ void DocumentTab::onFileChangedOnDisk(const QString &path)
     }
 
     pendingExternalChange_ = true;
+    externalConflict_ = true;
     if (isActive()) {
         checkForExternalChanges();
     }
@@ -4361,6 +4540,12 @@ bool DocumentTab::pasteImageFromClipboard(const QMimeData *mimeData)
         : QFileInfo(currentFile_).absolutePath();
     QDir baseDir(baseDirPath);
 
+    const QFileInfo existingAssets(baseDir.filePath("assets"));
+    if (existingAssets.exists() && (existingAssets.isSymLink() || !existingAssets.isDir())) {
+        QMessageBox::warning(window_, window_->uiText("pasteImageFailed"), window_->uiText("createAssetsFailed"));
+        return false;
+    }
+
     if (!baseDir.exists("assets") && !baseDir.mkdir("assets")) {
         QMessageBox::warning(window_, window_->uiText("pasteImageFailed"), window_->uiText("createAssetsFailed"));
         return false;
@@ -4397,6 +4582,12 @@ bool DocumentTab::pasteImageFileFromClipboard(const QMimeData *mimeData)
             : QFileInfo(currentFile_).absolutePath();
         QDir baseDir(baseDirPath);
 
+        const QFileInfo existingAssets(baseDir.filePath("assets"));
+        if (existingAssets.exists() && (existingAssets.isSymLink() || !existingAssets.isDir())) {
+            QMessageBox::warning(window_, window_->uiText("pasteImageFailed"), window_->uiText("createAssetsFailed"));
+            return false;
+        }
+
         if (!baseDir.exists("assets") && !baseDir.mkdir("assets")) {
             QMessageBox::warning(window_, window_->uiText("pasteImageFailed"), window_->uiText("createAssetsFailed"));
             return false;
@@ -4421,7 +4612,9 @@ bool DocumentTab::pasteImageFileFromClipboard(const QMimeData *mimeData)
 
 QString DocumentTab::translationCacheKey(const QString &block) const
 {
-    return window_->ollamaModel() + QLatin1Char('\x1f') + window_->translationTarget() + QLatin1Char('\x1f') + block;
+    return window_->ollamaEndpoint() + QLatin1Char('\x1f')
+        + window_->ollamaModel() + QLatin1Char('\x1f')
+        + window_->translationTarget() + QLatin1Char('\x1f') + block;
 }
 
 void DocumentTab::ensureTranslations()
@@ -4693,12 +4886,26 @@ QString DocumentTab::buildPreviewTemplate() const
         {QStringLiteral("CAUTION"), window_->uiText("alertCaution")},
     }).toJson(QJsonDocument::Compact);
 
+    const QString scriptNonce = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const QString contentSecurityPolicy = QStringLiteral(
+        "default-src 'none'; img-src file: data:; media-src file: data:; "
+        "style-src 'unsafe-inline'; font-src data:; script-src 'nonce-%1'; "
+        "connect-src 'none'; object-src 'none'; frame-src 'none'; "
+        "base-uri 'none'; form-action 'none'").arg(scriptNonce);
+
     return QStringLiteral(
-        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>")
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+        "<meta http-equiv=\"Content-Security-Policy\" content=\"")
+        + contentSecurityPolicy.toHtmlEscaped()
+        + QStringLiteral("\"><style>")
         + css
-        + QStringLiteral("</style></head><body><div id=\"content\"></div><script>")
+        + QStringLiteral("</style></head><body><div id=\"content\"></div><script nonce=\"")
+        + scriptNonce
+        + QStringLiteral("\">")
         + webChannelScript()
-        + QStringLiteral("</script><script>var __mdvCopyCodeLabel=")
+        + QStringLiteral("</script><script nonce=\"")
+        + scriptNonce
+        + QStringLiteral("\">var __mdvCopyCodeLabel=")
         + QString::fromUtf8(copyCodeLabel)
         + QStringLiteral("[0];var __mdvCopiedLabel=")
         + QString::fromUtf8(copiedLabel)
@@ -4802,7 +5009,11 @@ public:
         // harmless (and a no-op) when nothing is actually listening.
         QLocalServer::removeServer(serverName());
         server_ = new QLocalServer(this);
-        server_->listen(serverName());
+        server_->setSocketOptions(QLocalServer::UserAccessOption);
+        if (!server_->listen(serverName())) {
+            qWarning("Could not start single-instance server: %s",
+                qPrintable(server_->errorString()));
+        }
         connect(server_, &QLocalServer::newConnection, this, &SingleInstanceCoordinator::acceptConnection);
     }
 
@@ -4821,6 +5032,9 @@ public:
         QByteArray payload;
         QDataStream stream(&payload, QIODevice::WriteOnly);
         stream << paths << viewerMode << followMode;
+        if (payload.size() > maxPayloadBytes_) {
+            return false;
+        }
 
         socket.write(payload);
         socket.waitForBytesWritten(500);
@@ -4831,21 +5045,42 @@ public:
 private:
     static QString serverName()
     {
-        return QStringLiteral("mdv-single-instance-%1").arg(QString::fromLocal8Bit(qgetenv("USERNAME")));
+        const QByteArray userKey = QCryptographicHash::hash(
+            QDir::homePath().toUtf8(), QCryptographicHash::Sha256).toHex().left(16);
+        return QStringLiteral("mdv-single-instance-%1").arg(QString::fromLatin1(userKey));
     }
 
     void acceptConnection()
     {
         while (QLocalSocket *socket = server_->nextPendingConnection()) {
+            socket->setReadBufferSize(maxPayloadBytes_ + 1);
+            connect(socket, &QIODevice::readyRead, socket, [socket] {
+                if (socket->bytesAvailable() > maxPayloadBytes_) {
+                    socket->abort();
+                }
+            });
             connect(socket, &QLocalSocket::disconnected, this, [this, socket] {
                 QByteArray payload = socket->readAll();
+                if (payload.size() > maxPayloadBytes_) {
+                    socket->deleteLater();
+                    return;
+                }
                 QDataStream stream(&payload, QIODevice::ReadOnly);
                 QStringList paths;
                 bool viewerMode = false;
                 bool followMode = false;
                 stream >> paths >> viewerMode >> followMode;
 
-                if (onFilesReceived) {
+                bool valid = stream.status() == QDataStream::Ok
+                    && stream.atEnd() && paths.size() <= maxPathCount_;
+                for (const QString &path : paths) {
+                    if (path.size() > maxPathCharacters_) {
+                        valid = false;
+                        break;
+                    }
+                }
+
+                if (valid && onFilesReceived) {
                     onFilesReceived(paths, viewerMode, followMode);
                 }
                 socket->deleteLater();
@@ -4853,6 +5088,9 @@ private:
         }
     }
 
+    static constexpr qint64 maxPayloadBytes_ = 1024 * 1024;
+    static constexpr qsizetype maxPathCount_ = 256;
+    static constexpr qsizetype maxPathCharacters_ = 32768;
     QLocalServer *server_ = nullptr;
 };
 

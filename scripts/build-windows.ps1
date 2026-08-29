@@ -86,9 +86,9 @@ function Find-QtPrefix {
         }
     }
 
-    if (Test-Path "C:\Qt") {
-        $qtKits = Get-ChildItem "C:\Qt" -Directory |
-            ForEach-Object { Get-ChildItem $_.FullName -Directory -ErrorAction SilentlyContinue } |
+    $defaultQtRoot = "C:\Qt\$script:DefaultQtVersion"
+    if (Test-Path $defaultQtRoot) {
+        $qtKits = Get-ChildItem $defaultQtRoot -Directory -ErrorAction SilentlyContinue |
             Where-Object {
                 $_.Name -match "^(msvc|mingw).+_64$" -and
                 (Test-Path (Join-Path $_.FullName "bin\windeployqt.exe"))
@@ -101,7 +101,7 @@ function Find-QtPrefix {
         }
     }
 
-    throw "Qt for Windows was not found. Pass -QtDir, set QT_DIR, or install Qt under C:\Qt."
+    throw "Default Qt $script:DefaultQtVersion was not found. Install it under C:\Qt, pass -QtDir, or set QT_DIR."
 }
 
 function Find-VisualStudioVcVars {
@@ -204,6 +204,11 @@ function Get-BuiltExecutable {
 }
 
 $rootDir = Resolve-RootDir
+$defaultQtVersionFile = Join-Path $rootDir "qt-default-version.txt"
+$script:DefaultQtVersion = (Get-Content $defaultQtVersionFile -Raw).Trim()
+if ($script:DefaultQtVersion -notmatch '^\d+\.\d+\.\d+$') {
+    throw "Invalid qt-default-version.txt: $script:DefaultQtVersion"
+}
 $signSettings = $null
 if ($Sign) {
     $signSettings = Get-CodeSignSettings -SignToolPath $SignToolPath -TimestampUrl $TimestampUrl
