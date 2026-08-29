@@ -24,6 +24,15 @@ function Resolve-RootDir {
     return (Resolve-Path (Join-Path $scriptDir "..")).Path
 }
 
+function Resolve-RootedPath {
+    param([string]$Root, [string]$Path)
+
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return [System.IO.Path]::GetFullPath($Path)
+    }
+    return [System.IO.Path]::GetFullPath((Join-Path $Root $Path))
+}
+
 function Resolve-Tool {
     param(
         [string]$Name,
@@ -86,9 +95,9 @@ if ($Sign) {
     $signSettings = Get-CodeSignSettings -SignToolPath $SignToolPath -TimestampUrl $TimestampUrl
     Write-CodeSignSummary $signSettings
 }
-$deployPath = [System.IO.Path]::GetFullPath((Join-Path $rootDir $DeployDir))
-$workPath = [System.IO.Path]::GetFullPath((Join-Path $rootDir $WorkDir))
-$outputPath = [System.IO.Path]::GetFullPath((Join-Path $rootDir $OutputDir))
+$deployPath = Resolve-RootedPath $rootDir $DeployDir
+$workPath = Resolve-RootedPath $rootDir $WorkDir
+$outputPath = Resolve-RootedPath $rootDir $OutputDir
 $issPath = Join-Path $workPath "mdv.iss"
 $version = Get-ProjectVersion (Join-Path $rootDir "CMakeLists.txt")
 
