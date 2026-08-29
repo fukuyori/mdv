@@ -595,3 +595,58 @@ $env:CODESIGN_CERT = "<証明書の SHA1 サムプリント>"
 `http://timestamp.digicert.com`)、`CODESIGN_DIGEST`(既定は `sha256`)、
 `CODESIGN_CSP` と `CODESIGN_KEY_CONTAINER`(ハードウェアトークン用)、
 `SIGNTOOL`(`signtool.exe` のパス。`-SignToolPath` でも指定可)。
+
+## アンインストール
+
+### macOS
+
+pkg インストーラーで入れた場合:
+
+```sh
+sudo rm -rf /Applications/mdv.app
+sudo rm -f /usr/local/bin/mdv
+sudo pkgutil --forget com.fukuyori.mdv
+```
+
+pkg にアンインストーラーは付属しません。`pkgutil --forget` はインストール
+記録(レシート)を削除するだけで、ファイル自体は消さないため、上の 2 つの
+`rm` と併せて実行してください。
+
+DMG からドラッグ&ドロップで入れた場合は `/Applications/mdv.app` をゴミ箱へ
+移すだけです。
+
+設定とキャッシュも消す場合(インストール方法によらず共通、sudo 不要):
+
+```sh
+rm -f  ~/Library/Preferences/com.mdv.mdv.plist
+rm -rf ~/Library/Caches/mdv
+rm -rf ~/Library/"Application Support"/mdv
+rm -rf ~/Library/"Saved Application State"/com.fukuyori.mdv.savedState
+```
+
+環境によっては存在しないパスもありますが、そのまま実行して問題ありません。
+
+### Windows
+
+「設定 > アプリ > インストールされているアプリ」から mdv をアンインストール
+するか、インストール先(既定は `C:\Program Files\mdv`)の `unins000.exe` を
+実行します。
+
+### Linux
+
+`.deb` で入れた場合:
+
+```sh
+sudo apt remove mdv
+```
+
+tarball の `install.sh` で入れた場合は、同じアーカイブに入っている
+`uninstall.sh` を、インストール時と同じ `PREFIX` で実行します(既定は
+`~/.local`):
+
+```sh
+./uninstall.sh
+PREFIX=/usr/local sudo ./uninstall.sh   # システム全体に入れた場合
+```
+
+AppImage は単一ファイルなので、`.AppImage` を削除するだけです。

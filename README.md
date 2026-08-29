@@ -610,3 +610,57 @@ and the uninstaller. Optional environment variables:
 `http://timestamp.digicert.com`), `CODESIGN_DIGEST` (default `sha256`),
 `CODESIGN_CSP` and `CODESIGN_KEY_CONTAINER` (hardware tokens), and `SIGNTOOL`
 (explicit `signtool.exe` path, also settable with `-SignToolPath`).
+
+## Uninstall
+
+### macOS
+
+Installed from the pkg installer:
+
+```sh
+sudo rm -rf /Applications/mdv.app
+sudo rm -f /usr/local/bin/mdv
+sudo pkgutil --forget com.fukuyori.mdv
+```
+
+The pkg ships no uninstaller. `pkgutil --forget` only drops the installation
+receipt and leaves the files in place, so run it together with the two `rm`
+commands above.
+
+Installed by dragging from the DMG: move `/Applications/mdv.app` to the Trash.
+
+To remove the settings and caches as well (same for either installation
+method, no sudo needed):
+
+```sh
+rm -f  ~/Library/Preferences/com.mdv.mdv.plist
+rm -rf ~/Library/Caches/mdv
+rm -rf ~/Library/"Application Support"/mdv
+rm -rf ~/Library/"Saved Application State"/com.fukuyori.mdv.savedState
+```
+
+Some of these paths may not exist depending on how the app was used; running
+the commands anyway is harmless.
+
+### Windows
+
+Uninstall mdv from Settings > Apps > Installed apps, or run `unins000.exe` in
+the installation directory (`C:\Program Files\mdv` by default).
+
+### Linux
+
+Installed from the `.deb`:
+
+```sh
+sudo apt remove mdv
+```
+
+Installed with the tarball's `install.sh`: run the `uninstall.sh` from the same
+archive with the `PREFIX` used at install time (`~/.local` by default):
+
+```sh
+./uninstall.sh
+PREFIX=/usr/local sudo ./uninstall.sh   # for a system-wide install
+```
+
+The AppImage is a single file, so deleting the `.AppImage` is enough.
