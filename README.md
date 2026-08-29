@@ -291,7 +291,8 @@ replacement/rotation rebuild the bounded tail from the new file.
 Scrolling away from the bottom pauses automatic scrolling, so incoming text
 does not interrupt reading earlier content. Automatic following resumes when
 you scroll back to the bottom or press `Esc`, which jumps directly to the
-latest content.
+latest content. On initial open and after file rotation, the outline is also
+scrolled so its final heading is visible.
 
 The Open and Save As dialogs start in the current working directory (home
 when the app is launched from Finder) and then follow the directory you

@@ -86,7 +86,7 @@
 #include "md4c-html.h"
 
 #ifndef MDV_VERSION
-#define MDV_VERSION "0.6.0"
+#define MDV_VERSION "0.6.1"
 #endif
 
 // ---------------------------------------------------------------------------
@@ -1632,6 +1632,7 @@ private:
     QByteArray loadedFileDigest_;
     bool syncingEditorFromPreview_ = false;
     bool followMode_ = false;
+    bool followOutlineTailPending_ = false;
     QByteArray followRawBuffer_;
     QByteArray followBoundarySignature_;
     qint64 followBufferStartOffset_ = 0;
@@ -3754,6 +3755,19 @@ void DocumentTab::updateOutline()
     }
 
     outline_->expandAll();
+    if (followMode_ && followOutlineTailPending_) {
+        followOutlineTailPending_ = false;
+        QTreeWidgetItem *lastItem = nullptr;
+        if (outline_->topLevelItemCount() > 0) {
+            lastItem = outline_->topLevelItem(outline_->topLevelItemCount() - 1);
+        }
+        while (lastItem != nullptr && lastItem->childCount() > 0) {
+            lastItem = lastItem->child(lastItem->childCount() - 1);
+        }
+        if (lastItem != nullptr) {
+            outline_->scrollToItem(lastItem, QAbstractItemView::PositionAtBottom);
+        }
+    }
 }
 
 void DocumentTab::updatePreview()
@@ -4049,6 +4063,7 @@ bool DocumentTab::loadFileImpl(const QString &path, bool followMode, bool quiet)
     currentFile_ = path;
     rememberLoadedFile(path, data);
     followMode_ = false;
+    followOutlineTailPending_ = false;
     resumeFollowShortcut_->setEnabled(false);
     updateTranslationModeUi();
     editor_->setReadOnly(false);
@@ -4126,8 +4141,13 @@ bool DocumentTab::loadFollowSnapshot(const QString &path, bool quiet)
     followLoadedModified_ = loadedInfo.lastModified();
     followFileBirthTime_ = loadedInfo.birthTime();
     followNeedsReset_ = false;
+    followOutlineTailPending_ = true;
 
-    return applyFollowBuffer(path, quiet);
+    const bool applied = applyFollowBuffer(path, quiet);
+    if (!applied) {
+        followOutlineTailPending_ = false;
+    }
+    return applied;
 }
 
 QString DocumentTab::decodedFollowBuffer(bool *lossy) const
