@@ -7,7 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 English | [日本語](CHANGELOG.ja.md)
 
-## [Unreleased]
+## [0.6.4] - 2026-08-29
+
+### Added
+
+- GitHub Actions CI (`.github/workflows/ci.yml`): Linux Release, Linux
+  ASan/UBSan, macOS, and Windows (MSVC) builds with the full CTest suite,
+  including the headless WebEngine test, against the Qt version in
+  `qt-default-version.txt`; ShellCheck and a PowerShell parse check for the
+  scripts. New CMake options `MDV_SANITIZE` (AddressSanitizer +
+  UndefinedBehaviorSanitizer for the whole tree) and
+  `MDV_WEBENGINE_TEST_CHROMIUM_FLAGS` (Chromium flags for the WebEngine test,
+  so sandbox-less CI runners can pass `--no-sandbox`). The application
+  target now also compiles with `-Wconversion -Wsign-conversion`, and the four
+  remaining narrowing conversions in `main.cpp` were made explicit.
+
+### Documentation
+
+- README (English and Japanese) gained a **Security** section describing the
+  threat model and every enforced protection, a **Tests** section listing the
+  CTest targets and the headless WebEngine requirements, and an updated
+  project structure. The feature list no longer advertises raw HTML, and the
+  Windows signing instructions now reflect that password-protected `.pfx`
+  files are rejected.
 
 ### Security
 

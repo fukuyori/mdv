@@ -2,7 +2,9 @@
 
 C++ と Qt Widgets で作られたシンプルな Markdown ビュワー/エディタです。
 
-[English](README.md) | 日本語 | [変更履歴](CHANGELOG.ja.md)
+[English](README.md) | 日本語
+
+[![CI](https://github.com/fukuyori/mdv/actions/workflows/ci.yml/badge.svg)](https://github.com/fukuyori/mdv/actions/workflows/ci.yml) | [変更履歴](CHANGELOG.ja.md)
 
 ## スクリーンショット
 
@@ -21,7 +23,8 @@ C++ と Qt Widgets で作られたシンプルな Markdown ビュワー/エデ�
   (箇条書き・番号付き・チェックボックス・引用)の自動継続、Shift+Enter で
   プレーン改行、Tab / Shift+Tab で選択行のインデント/解除
 - GitHub Flavored Markdown のライブプレビュー(表・タスクリスト・打ち消し線・
-  オートリンク・生 HTML)。Qt WebEngine + [md4c](https://github.com/mity/md4c) で描画
+  オートリンク)。Qt WebEngine + [md4c](https://github.com/mity/md4c) で描画。
+  生 HTML は実行せずテキストとして表示([セキュリティ](#セキュリティ)参照)
 - プレビューのコンテキストメニューから選択範囲をコピー。コードブロックは
   ブロック上のボタンで全体を一括コピー
 - エディタとプレビューの双方向スクロール同期(見出しアンカー方式)
@@ -121,11 +124,9 @@ GitHub 形式のアラートは、引用ブロックの先頭行へ `NOTE`、`TI
 同梱の Highlight.js 共通言語ビルドとライト・ダーク・セピア用スタイルにより、
 オフラインで動作します。アラートの見出しは選択中のUI言語で表示します。
 
-セキュリティのため、生HTMLは実行せずテキストとして表示し、外部画像などの
-リモートリソースは自動取得しません。ローカル画像は文書と同じディレクトリ
-(およびその配下)からのみ読み込み、シンボリックリンクを含めそこから外れる
-パスは遮断します。外部リンクは明示的にクリックした場合のみ開きます。通常モードで開けるファイルは256 MiBまでです。それを超える追記型
-ログには`-f`を使用してください。
+生 HTML は実行せずテキストとして表示し、リモートリソースは取得せず、ローカル
+画像は文書のディレクトリ配下からのみ読み込みます。詳細は
+[セキュリティ](#セキュリティ)を参照してください。
 
 ## ビルド
 
@@ -216,6 +217,35 @@ Homebrewまたは別のQtプレフィックスを使う場合は`QT_ROOT`を明�
 brew install qt cmake
 QT_ROOT="$(brew --prefix qt)" scripts/macos_build_release.sh
 ```
+
+### テスト
+
+テストは既定でビルドされ(`include(CTest)` により `BUILD_TESTING` が ON。
+省略するには `-DBUILD_TESTING=OFF`)、`ctest` で実行します。現在のテストは
+次のとおりです。
+
+| ターゲット | 検証内容 |
+| --- | --- |
+| `mdv_security_test` | md4c が生 HTML をエスケープ済みテキストとして出力すること、病的なリンク参照展開の出力が有界であること |
+| `mdv_preview_policy_test` | ローカルリソース判定が文書ディレクトリ配下の通常ファイルだけを許可し、`..` 脱出・絶対パス・ディレクトリ・外部を指すシンボリックリンク・`file:` 以外の URL を拒否すること |
+| `mdv_preview_webengine_test` | 製品と同じ設定・CSP・インターセプターを適用したオフスクリーンの `QWebEnginePage` に攻撃用文書を読み込んでも、スクリプト実行・ディレクトリ外のファイル読み取り・ローカル HTTP サーバーへの到達ができないこと |
+| `mdv_codex_log_test`, `mdv_claude_log_test`, `mdv_antigravity_log_test` | 追従モードで使う AI セッションログのパーサ |
+
+`mdv_preview_webengine_test` は実際の WebEngine プロセスを起動します。CTest は
+`QT_QPA_PLATFORM=offscreen` と、キャッシュ変数
+`MDV_WEBENGINE_TEST_CHROMIUM_FLAGS`(既定は `--disable-gpu`)の Chromium フラグを
+設定します。ユーザー名前空間を使えない CI ランナーでは
+`-DMDV_WEBENGINE_TEST_CHROMIUM_FLAGS="--disable-gpu --no-sandbox"` が必要です。
+
+`-DMDV_SANITIZE=ON`(GCC/Clang)で構成すると、同梱の md4c を含むツリー全体を
+AddressSanitizer と UndefinedBehaviorSanitizer 付きでビルドします。Qt と
+Chromium は終了時にメモリを解放しないため、テストは
+`ASAN_OPTIONS=detect_leaks=0` を付けて実行してください。
+
+GitHub Actions(`.github/workflows/ci.yml`)は push と pull request のたびに、
+`qt-default-version.txt` の Qt で Linux Release・Linux ASan/UBSan・macOS・
+Windows(MSVC)のビルドとテストを実行し、スクリプトに対して ShellCheck と
+PowerShell の構文チェックも行います。
 
 ### Windows
 
@@ -363,22 +393,70 @@ Ollama をインストールし、モデルを取得(例: `ollama pull translate
 ブロックだけが再翻訳されます。翻訳に失敗したブロックは対訳表示で
 「(翻訳失敗)」マーカー付きの原文表示となり、残りの翻訳は継続します。
 
+## セキュリティ
+
+mdv は開いた Markdown ファイルをすべて未信頼の入力として扱います。以下の防御は
+コードで強制され、「(テスト済み)」の項目はテストスイートで検証しています。
+
+- **生 HTML を実行しない。** md4c を `MD_FLAG_NOHTML` で実行し、文書内の HTML は
+  エスケープ済みテキストとして表示します。原文・対訳・翻訳表示はすべて同じ
+  変換経路を通ります。(テスト済み)
+- **Content Security Policy。** プレビューのテンプレートには、読み込みごとの
+  ランダムな nonce を持つスクリプトだけを許可し、`connect-src`・`frame-src`・
+  `object-src`・`form-action`・`base-uri` を拒否する CSP を設定しています。
+  (テスト済み)
+- **ローカルファイル。** リクエストインターセプターが、文書のディレクトリ配下の
+  画像・メディアだけを許可します。`..` による脱出、絶対パス、外部を指す
+  シンボリックリンクは、ファイルが開かれる前に遮断されます。WebEngine の
+  リモート URL アクセス、スクリプトによるウィンドウ作成・クリップボード利用、
+  ローカルストレージは無効です。(テスト済み)
+- **リンク。** リンクをクリックしてもプレビューは遷移しません。`http`・`https`・
+  `mailto` はシステムブラウザで開き、それ以外のスキームは無視されます。
+- **同梱パーサ。** md4c 0.5.3 と Highlight.js 11.12.0 には、リンク参照の二次
+  展開と XML の ReDoS に対する上流修正が含まれています。100,000 文字を超える
+  コードブロックはハイライトせず、言語の自動判定も行いません。
+- **ファイルサイズ。** 通常モードは 256 MiB を超えるファイルを拒否し、読み取り
+  自体にも上限を設けています。`-f` はそれより大きい追記型ログを有界の末尾
+  バッファで追従します。
+- **保存。** 保存は助言ロック(`<ファイル>.mdv-lock`)の下で `QSaveFile` を
+  使って行います。rename の直前にディスク上のサイズと SHA-256 を読み込み時の
+  値と比較し、外部の編集は黙って上書きせず報告します。
+- **単一インスタンス。** 引き渡し用ソケットはユーザー専用の実行時ディレクトリに
+  UID 付きの名前で作成し、同じ UID の接続のみ受け付け、ペイロードは 1 MiB・
+  絶対パス 256 件まで、停止したクライアントは 5 秒で切断、同時接続は最大 16 です。
+- **翻訳。** エンドポイントを検証し(`http`/`https`、ホスト、認証情報・クエリ
+  なし)、ローカル以外への平文 HTTP は文書を送る前に確認します。各ジョブは
+  エンドポイント・モデル・言語を自身で保持するため、設定変更で待機中の本文が
+  別の宛先に送られることはありません。リダイレクトは追従せず、応答は 8 MiB、
+  ブロックは 256 KiB、キューは 8192 件 / 32 MiB を上限とします。
+- **ビルド時の防御。** Linux/macOS では `-fstack-protector-strong`、Release
+  での `_FORTIFY_SOURCE=3`、Linux では完全な RELRO と `BIND_NOW` を有効にしています。
+
+セキュリティ上の問題は公開 issue ではなく、メンテナーへ非公開で報告して
+ください。
+
 ## プロジェクト構成
 
 ```
-src/main.cpp        アプリケーション本体(ウィンドウ、エディタ、プレビュー、同期)
-third_party/md4c/   ベンダリングした md4c Markdown パーサ(MIT ライセンス)
-third_party/mermaid ベンダリングした Mermaid 図レンダラー(MIT ライセンス)
-third_party/katex/  ベンダリングした KaTeX 数式レンダラーとフォント(MIT ライセンス)
-third_party/highlightjs/ ベンダリングした Highlight.js (BSD-3-Clause)
-resources/          アプリアイコンのソースと macOS アイコンセット
-scripts/            macOS のリリース・署名・アイコン生成スクリプト
-tools/icon_renderer アイコンスクリプトが使う SVG→PNG 変換ヘルパー
+src/main.cpp              アプリケーション本体(ウィンドウ、エディタ、プレビュー、同期)
+src/preview_policy.*      プレビューのローカルリソース判定と CSP
+src/preview_interceptor.* 上記ポリシーを適用する WebEngine リクエストインターセプター
+src/codex_log.*           Codex ロールアウトログのパーサ(追従モード)
+src/claude_log.*          Claude Code セッションログのパーサ(追従モード)
+src/antigravity_log.*     Antigravity トランスクリプトのパーサ(追従モード)
+tests/                    CTest のソース(「テスト」参照)
+third_party/md4c/         ベンダリングした md4c Markdown パーサ(MIT ライセンス)
+third_party/mermaid       ベンダリングした Mermaid 図レンダラー(MIT ライセンス)
+third_party/katex/        ベンダリングした KaTeX 数式レンダラーとフォント(MIT ライセンス)
+third_party/highlightjs/  ベンダリングした Highlight.js (BSD-3-Clause)
+resources/                アプリアイコンのソースと macOS アイコンセット
+scripts/                  Linux・macOS・Windows のビルド・パッケージ・署名スクリプト
+tools/icon_renderer       アイコンスクリプトが使う SVG→PNG 変換ヘルパー
 ```
 
 ### プレビューの仕組み
 
-エディタのテキストを md4c(GitHub 方言と LaTeX 数式拡張)で HTML に変換し、
+エディタのテキストを md4c(GitHub 方言と LaTeX 数式拡張、生 HTML は無効)で HTML に変換し、
 `QWebEngineView` に
 流し込みます。テーマ CSS を含むテンプレートページは一度だけロードし、以後は
 ページ内容だけを 120ms のデバウンス付きで差し替えるため、入力中にプレビューが
@@ -390,7 +468,9 @@ tools/icon_renderer アイコンスクリプトが使う SVG→PNG 変換ヘル�
 同梱の Highlight.js で処理し、GitHub 形式のアラート引用も同じ DOM 処理で分類・
 装飾します。プレビュー内のリンクをクリックしても
 ページ遷移は起きず、http/https/mailto はシステムブラウザで開き、それ以外の
-スキームはブロックされます。
+スキームはブロックされます。ページが読み込めるリソースはリクエスト
+インターセプターとテンプレートの Content Security Policy で制限されます
+([セキュリティ](#セキュリティ)参照)。
 
 ## リリースビルド
 
@@ -451,19 +531,20 @@ Inno Setup を実行せず `.iss` だけ生成する場合は `-GenerateOnly` �
 Windows の電子署名(Authenticode):
 
 ```powershell
-$env:CODESIGN_CERT = "C:\path\to\cert.pfx"
-$env:CODESIGN_CERT_PASSWORD = "..."
+$env:CODESIGN_CERT = "<証明書の SHA1 サムプリント>"
 .\scripts\build-windows.ps1 -Sign
 .\scripts\package-windows-inno.ps1 -Sign
 ```
 
 どちらのスクリプトも `-Sign` を受け付け、証明書は環境変数
-`CODESIGN_CERT` から取得します。`CODESIGN_CERT` には `.pfx` のパス、
-証明書ストア内の SHA1 サムプリント、またはサブジェクト名を指定できます。
+`CODESIGN_CERT` から取得します。`CODESIGN_CERT` には証明書ストア内の SHA1
+サムプリントまたはサブジェクト名、あるいはパスワードのない `.pfx` のパスを
+指定できます。パスワード付きの `.pfx` は拒否されます(`signtool /p` は
+パスワードを他のプロセスから見える形で渡すため)。証明書ストアへ
+インポートするか、ハードウェアキーを使用してください。
 `build-windows.ps1 -Sign` は配置後の `mdv.exe` に署名し、
 `package-windows-inno.ps1 -Sign` はペイロードの `mdv.exe`、インストーラー、
 アンインストーラーに署名します。任意の環境変数:
-`CODESIGN_CERT_PASSWORD`(証明書ファイルのパスワード)、
 `CODESIGN_TIMESTAMP_URL`(RFC 3161 サーバー、既定は
 `http://timestamp.digicert.com`)、`CODESIGN_DIGEST`(既定は `sha256`)、
 `CODESIGN_CSP` と `CODESIGN_KEY_CONTAINER`(ハードウェアトークン用)、

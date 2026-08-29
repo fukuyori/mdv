@@ -105,7 +105,7 @@
 #include "preview_policy.h"
 
 #ifndef MDV_VERSION
-#define MDV_VERSION "0.6.3"
+#define MDV_VERSION "0.6.4"
 #endif
 
 // ---------------------------------------------------------------------------
@@ -205,7 +205,7 @@ static QList<MdBlock> splitMarkdownBlocks(const QString &markdown)
                 inDisplayMath = !inDisplayMath;
             }
         }
-        lineStart += line.size() + 1;
+        lineStart += static_cast<int>(line.size()) + 1;
     }
     if (!current.isEmpty()) {
         blocks.append({current.join(QLatin1Char('\n')), currentStart});
@@ -4112,7 +4112,7 @@ bool DocumentTab::loadFileImpl(const QString &path, bool followMode, bool quiet)
         const auto answer = QMessageBox::question(
             window_,
             window_->uiText("largeFileTitle"),
-            window_->uiText("largeFileText").arg(QString::number(info.size() / (1024.0 * 1024.0), 'f', 1)),
+            window_->uiText("largeFileText").arg(QString::number(static_cast<double>(info.size()) / (1024.0 * 1024.0), 'f', 1)),
             QMessageBox::Yes | QMessageBox::Cancel,
             QMessageBox::Cancel);
         if (answer != QMessageBox::Yes) {
@@ -5134,7 +5134,7 @@ void DocumentTab::syncPreviewToEditor()
     anchors.append(headings);
     anchors.append(sourceEnd);
 
-    int segment = anchors.size() - 2;
+    int segment = static_cast<int>(anchors.size()) - 2;
     qreal t = 1.0;
     for (int i = 0; i + 1 < anchors.size(); ++i) {
         if (topPos > anchors.at(i + 1)) {
@@ -5173,7 +5173,7 @@ void DocumentTab::syncEditorToPreview(int headingCount, int segment, double t, d
         anchors.append(headings);
         anchors.append(sourceEnd);
 
-        segment = qBound(0, segment, anchors.size() - 2);
+        segment = qBound(0, segment, static_cast<int>(anchors.size()) - 2);
         target = qRound(anchors.at(segment)
             + qBound(0.0, t, 1.0) * (anchors.at(segment + 1) - anchors.at(segment)));
     } else {

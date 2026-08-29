@@ -7,7 +7,26 @@
 
 [English](CHANGELOG.md) | 日本語
 
-## [未リリース]
+## [0.6.4] - 2026-08-29
+
+### 追加
+
+- GitHub Actions による CI(`.github/workflows/ci.yml`)を追加。
+  `qt-default-version.txt` の Qt で Linux Release・Linux ASan/UBSan・macOS・
+  Windows(MSVC)をビルドし、ヘッドレス WebEngine 試験を含む CTest 全体を実行。
+  スクリプトには ShellCheck と PowerShell 構文チェックを実施。CMake オプション
+  `MDV_SANITIZE`(ツリー全体の AddressSanitizer + UndefinedBehaviorSanitizer)と
+  `MDV_WEBENGINE_TEST_CHROMIUM_FLAGS`(WebEngine 試験用の Chromium フラグ。
+  サンドボックスを使えない CI ランナー向けに `--no-sandbox` を渡せる)を追加。
+  アプリケーションターゲットは `-Wconversion -Wsign-conversion` 付きでコンパイル
+  するようにし、`main.cpp` に残っていた 4 件の縮小変換を明示的なキャストに修正。
+
+### ドキュメント
+
+- README(日英)に、脅威モデルと実装済みの防御を説明する**セキュリティ**節、
+  CTest ターゲットとヘッドレス WebEngine の要件をまとめた**テスト**節を追加し、
+  プロジェクト構成を更新。機能一覧から生 HTML の記述を削除し、Windows 署名の
+  説明をパスワード付き `.pfx` を拒否する現在の挙動に合わせた。
 
 ### セキュリティ
 

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(mdv VERSION 0.6.3 LANGUAGES C CXX)
+project(mdv VERSION 0.6.4 LANGUAGES C CXX)
 
 include(CTest)
 
@@ -17,6 +17,15 @@ endif()
 set(MDV_MIN_QT_VERSION 6.10.3)
 find_package(Qt6 ${MDV_MIN_QT_VERSION} REQUIRED
     COMPONENTS Widgets WebEngineWidgets WebChannel Network)
+
+# CI builds enable AddressSanitizer and UndefinedBehaviorSanitizer for the
+# whole tree (application, tests, and the vendored parser) to catch memory
+# errors in the Markdown pipeline that a Release build would hide.
+option(MDV_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+if(MDV_SANITIZE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address,undefined)
+endif()
 
 add_library(md4c STATIC
     third_party/md4c/md4c.c
@@ -73,7 +82,7 @@ target_compile_definitions(mdv PRIVATE MDV_VERSION="${PROJECT_VERSION}")
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(mdv PRIVATE
-        -Wall -Wextra -Wpedantic
+        -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion
         -fstack-protector-strong
     )
     target_compile_options(md4c PRIVATE -fstack-protector-strong)
@@ -152,8 +161,12 @@ if(BUILD_TESTING)
     target_include_directories(mdv_preview_webengine_test PRIVATE src)
     target_link_libraries(mdv_preview_webengine_test PRIVATE Qt6::WebEngineWidgets Qt6::WebEngineCore Qt6::Network)
     add_test(NAME mdv_preview_webengine_test COMMAND mdv_preview_webengine_test)
+    # Chromium flags for the headless WebEngine test. Locked-down CI runners
+    # (no user namespaces) additionally need --no-sandbox.
+    set(MDV_WEBENGINE_TEST_CHROMIUM_FLAGS "--disable-gpu" CACHE STRING
+        "QTWEBENGINE_CHROMIUM_FLAGS used when running mdv_preview_webengine_test")
     set_tests_properties(mdv_preview_webengine_test PROPERTIES
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QTWEBENGINE_CHROMIUM_FLAGS=--disable-gpu"
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QTWEBENGINE_CHROMIUM_FLAGS=${MDV_WEBENGINE_TEST_CHROMIUM_FLAGS}"
         TIMEOUT 120
     )
 endif()

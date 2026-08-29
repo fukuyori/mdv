@@ -4,6 +4,8 @@ Simple Markdown viewer/editor built with C++ and Qt Widgets.
 
 English | [日本語](README.ja.md) | [Changelog](CHANGELOG.md)
 
+[![CI](https://github.com/fukuyori/mdv/actions/workflows/ci.yml/badge.svg)](https://github.com/fukuyori/mdv/actions/workflows/ci.yml)
+
 ## Screenshots
 
 Editor with live preview:
@@ -22,7 +24,8 @@ Viewer mode (`-v`), with the editor pane hidden:
   Shift+Enter for a plain newline, and Tab / Shift+Tab to indent or unindent
   selected lines
 - Live GitHub Flavored Markdown preview (tables, task lists, strikethrough,
-  autolinks, raw HTML) rendered with Qt WebEngine + [md4c](https://github.com/mity/md4c)
+  autolinks) rendered with Qt WebEngine + [md4c](https://github.com/mity/md4c).
+  Raw HTML is shown as text, not executed (see [Security](#security))
 - Copy selected preview text from its context menu, or copy an entire code
   block with the button shown on the block
 - Two-way synchronized scrolling between the editor and the preview,
@@ -125,12 +128,9 @@ GitHub-style alerts use a blockquote whose first line contains one of
 The bundled Highlight.js common-language build and its light, dark, and sepia
 styles work offline. Alert titles are displayed in the selected UI language.
 
-For security, raw HTML is shown as text rather than executed, and remote images
-or other remote resources are not loaded automatically. Local images are only
-loaded from the document's own directory (and its subdirectories); paths that
-escape it, including through symbolic links, are blocked. Open external links
-only after an explicit click. Normal mode accepts files up to 256 MiB; use
-`-f` for larger append-only logs.
+Raw HTML is shown as text rather than executed, remote resources are never
+fetched, and local images only load from the document's own directory. The
+[Security](#security) section describes the full model.
 
 ## Build
 
@@ -223,6 +223,35 @@ Set `QT_ROOT` explicitly when using Homebrew or another Qt prefix:
 brew install qt cmake
 QT_ROOT="$(brew --prefix qt)" scripts/macos_build_release.sh
 ```
+
+### Tests
+
+Tests are built by default (`BUILD_TESTING` is ON via `include(CTest)`; pass
+`-DBUILD_TESTING=OFF` to skip them) and run with `ctest`. The suite currently
+contains:
+
+| Target | What it checks |
+| --- | --- |
+| `mdv_security_test` | md4c renders raw HTML as escaped text; pathological link-reference expansion stays bounded |
+| `mdv_preview_policy_test` | the local-resource policy allows only regular files under the document directory, rejecting `..` escapes, absolute paths, directories, symlinks that resolve outside, and non-`file:` URLs |
+| `mdv_preview_webengine_test` | a hostile document loaded into an offscreen `QWebEnginePage` with the production settings, CSP, and request interceptor cannot run script, read files outside its directory, or reach a local HTTP server |
+| `mdv_codex_log_test`, `mdv_claude_log_test`, `mdv_antigravity_log_test` | the AI session log parsers used by follow mode |
+
+`mdv_preview_webengine_test` starts a real WebEngine process. CTest runs it
+with `QT_QPA_PLATFORM=offscreen` and the Chromium flags from the
+`MDV_WEBENGINE_TEST_CHROMIUM_FLAGS` cache variable (default `--disable-gpu`);
+a locked-down CI runner without user namespaces needs
+`-DMDV_WEBENGINE_TEST_CHROMIUM_FLAGS="--disable-gpu --no-sandbox"`.
+
+Configure with `-DMDV_SANITIZE=ON` (GCC/Clang) to build the whole tree,
+including the vendored md4c, with AddressSanitizer and
+UndefinedBehaviorSanitizer. Run the tests with `ASAN_OPTIONS=detect_leaks=0`
+because Qt and Chromium keep allocations alive at exit.
+
+GitHub Actions (`.github/workflows/ci.yml`) runs the suite on every push and
+pull request: Linux Release and Linux ASan/UBSan, macOS, and Windows (MSVC),
+all against the Qt version in `qt-default-version.txt`, plus ShellCheck and a
+PowerShell parse check for the scripts.
 
 ### Windows
 
@@ -378,23 +407,73 @@ block, so editing retranslates only the blocks that changed. A block whose
 translation fails is shown untranslated with a "(translation failed)"
 marker in the bilingual view; the rest of the document continues.
 
+## Security
+
+mdv treats every opened Markdown file as untrusted input. The protections
+below are enforced in code and, where marked, covered by the test suite.
+
+- **No raw HTML.** md4c runs with `MD_FLAG_NOHTML`, so HTML in a document is
+  rendered as escaped text. Original, bilingual, and translated views all go
+  through the same converter. *(tested)*
+- **Content Security Policy.** The preview template carries a CSP that only
+  runs scripts with a per-load random nonce and denies `connect-src`,
+  `frame-src`, `object-src`, `form-action`, and `base-uri`. *(tested)*
+- **Local files.** A request interceptor allows images and media only from
+  the document's own directory; `..` escapes, absolute paths, and symbolic
+  links that resolve elsewhere are blocked before any file is opened. Remote
+  URLs, JavaScript-opened windows, clipboard access from script, and local
+  storage are disabled in WebEngine. *(tested)*
+- **Links.** Clicking a link never navigates the preview; `http`, `https`,
+  and `mailto` open in the system browser and other schemes are ignored.
+- **Bundled parsers.** md4c 0.5.3 and Highlight.js 11.12.0 include upstream
+  fixes for quadratic link-reference expansion and an XML ReDoS. Code blocks
+  over 100,000 characters are not highlighted, and languages are never
+  auto-detected.
+- **File size.** Normal mode refuses files over 256 MiB and reads with a hard
+  cap; `-f` follows larger append-only logs through a bounded tail buffer.
+- **Saving.** Saves go through `QSaveFile` under an advisory lock
+  (`<file>.mdv-lock`). The on-disk size and SHA-256 are compared with what
+  was loaded immediately before the rename, so an external edit is reported
+  instead of silently overwritten.
+- **Single instance.** The hand-off socket lives in a user-private runtime
+  directory under a uid-qualified name, accepts only peers with the same uid,
+  limits payloads to 1 MiB and 256 absolute paths, drops stalled clients after
+  5 seconds, and serves at most 16 connections.
+- **Translation.** Endpoints are validated (`http`/`https`, host, no
+  credentials or query); plain HTTP to a non-local host is confirmed before
+  any document text is sent. Each job carries its own endpoint, model, and
+  language so settings changes cannot redirect queued text. Requests never
+  follow redirects; responses are capped at 8 MiB, blocks at 256 KiB, and the
+  queue at 8192 jobs / 32 MiB.
+- **Build hardening.** Linux/macOS builds use `-fstack-protector-strong`,
+  `_FORTIFY_SOURCE=3` in Release, and full RELRO with `BIND_NOW` on Linux.
+
+Please report security issues privately to the maintainer rather than in a
+public issue.
+
 ## Project Structure
 
 ```
-src/main.cpp        Application (window, editor, preview pipeline, sync)
-third_party/md4c/   Vendored md4c Markdown parser (MIT license)
-third_party/mermaid Vendored Mermaid diagram renderer (MIT license)
-third_party/katex/  Vendored KaTeX math renderer and fonts (MIT license)
-third_party/highlightjs/ Vendored Highlight.js syntax highlighter (BSD-3-Clause)
-resources/          App icon sources and macOS icon set
-scripts/            macOS release, signing, and icon generation scripts
-tools/icon_renderer SVG-to-PNG helper used by the icon script
+src/main.cpp              Application (window, editor, preview pipeline, sync)
+src/preview_policy.*      Local-resource policy and CSP for the preview
+src/preview_interceptor.* WebEngine request interceptor applying that policy
+src/codex_log.*           Codex rollout log parser (follow mode)
+src/claude_log.*          Claude Code session log parser (follow mode)
+src/antigravity_log.*     Antigravity transcript parser (follow mode)
+tests/                    CTest sources (see Tests)
+third_party/md4c/         Vendored md4c Markdown parser (MIT license)
+third_party/mermaid       Vendored Mermaid diagram renderer (MIT license)
+third_party/katex/        Vendored KaTeX math renderer and fonts (MIT license)
+third_party/highlightjs/  Vendored Highlight.js syntax highlighter (BSD-3-Clause)
+resources/                App icon sources and macOS icon set
+scripts/                  Linux, macOS, and Windows build, packaging, and signing scripts
+tools/icon_renderer       SVG-to-PNG helper used by the icon script
 ```
 
 ### Preview pipeline
 
 The editor text is converted to HTML with md4c (GitHub dialect plus LaTeX math
-spans) and pushed
+spans, raw HTML disabled) and pushed
 into a `QWebEngineView` that loads a themed HTML template once; subsequent
 updates replace only the page content, debounced at 120 ms, so the preview
 neither flickers nor loses its scroll position while typing. Scroll positions
@@ -406,7 +485,9 @@ when the document changes again. Bundled Highlight.js processes the remaining
 code fences after each content update, and GitHub-style alert blockquotes are
 classified and styled in the same DOM pass.
 Clicked links never navigate the preview: http/https/mailto URLs open in the
-system browser and every other scheme is blocked.
+system browser and every other scheme is blocked. A request interceptor and
+the template's Content Security Policy restrict what the page may load; see
+[Security](#security).
 
 ## Release Build
 
@@ -466,19 +547,20 @@ want packaging to rebuild the payload. Use `-GenerateOnly` to generate the
 Authenticode signing on Windows:
 
 ```powershell
-$env:CODESIGN_CERT = "C:\path\to\cert.pfx"
-$env:CODESIGN_CERT_PASSWORD = "..."
+$env:CODESIGN_CERT = "<certificate SHA1 thumbprint>"
 .\scripts\build-windows.ps1 -Sign
 .\scripts\package-windows-inno.ps1 -Sign
 ```
 
 Both scripts take `-Sign` and read the certificate from the `CODESIGN_CERT`
-environment variable, which accepts a `.pfx` path, a certificate SHA1
-thumbprint, or a certificate subject name from the Windows certificate store.
+environment variable, which accepts a certificate SHA1 thumbprint or subject
+name from the Windows certificate store, or the path of a `.pfx` file that
+has no password. Password-protected `.pfx` files are rejected: `signtool /p`
+exposes the password to other processes, so import the certificate into the
+certificate store (or use a hardware-backed key) instead.
 `build-windows.ps1 -Sign` signs the deployed `mdv.exe`;
 `package-windows-inno.ps1 -Sign` signs the payload `mdv.exe`, the installer,
 and the uninstaller. Optional environment variables:
-`CODESIGN_CERT_PASSWORD` (certificate file password),
 `CODESIGN_TIMESTAMP_URL` (RFC 3161 server, default
 `http://timestamp.digicert.com`), `CODESIGN_DIGEST` (default `sha256`),
 `CODESIGN_CSP` and `CODESIGN_KEY_CONTAINER` (hardware tokens), and `SIGNTOOL`
