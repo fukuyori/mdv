@@ -27,6 +27,16 @@ English | [日本語](CHANGELOG.ja.md)
   was moved ahead of the conflict check so no dialog sits inside that window.
   A file that changes underneath the save is reported instead of silently
   overwritten; a lock held by another mdv instance is reported as well.
+- The single-instance socket is hardened further. On Unix it is created
+  inside a user-private runtime directory (`$XDG_RUNTIME_DIR` or Qt's runtime
+  location, only when owned by the user with mode 0700) under a name that
+  includes the numeric uid, so another local user cannot squat the
+  well-known name in a shared temp directory; connections whose peer uid
+  differs are rejected (`SO_PEERCRED` / `getpeereid`). Stalled clients are
+  dropped after 5 seconds, at most 16 connections are served at once, and
+  every received path must be absolute and clean. Second launches now
+  resolve relative arguments against their own working directory before
+  hand-off, fixing files opening relative to the wrong directory.
 
 ## [0.6.3] - 2026-08-29
 

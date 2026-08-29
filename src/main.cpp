@@ -1,5 +1,14 @@
 #include <cmath>
 
+#include <QtGlobal>
+
+#if defined(Q_OS_UNIX)
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+#endif
+
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
@@ -55,6 +64,7 @@
 #include <QRegularExpression>
 #include <QLockFile>
 #include <QSaveFile>
+#include <QStandardPaths>
 #include <QScrollBar>
 #include <QSet>
 #include <QSettings>
@@ -5190,6 +5200,7 @@ public:
         QLocalServer::removeServer(serverName());
         server_ = new QLocalServer(this);
         server_->setSocketOptions(QLocalServer::UserAccessOption);
+        server_->setMaxPendingConnections(maxActiveConnections_);
         if (!server_->listen(serverName())) {
             qWarning("Could not start single-instance server: %s",
                 qPrintable(server_->errorString()));
@@ -5203,6 +5214,17 @@ public:
     // window; false means this process should become the running instance.
     static bool handOffToRunningInstance(const QStringList &paths, bool viewerMode, bool followMode)
     {
+        // The receiving instance has its own working directory, so relative
+        // arguments must be resolved here, against ours, before hand-off.
+        QStringList absolutePaths;
+        absolutePaths.reserve(paths.size());
+        for (const QString &path : paths) {
+            absolutePaths.append(QDir::cleanPath(QFileInfo(path).absoluteFilePath()));
+        }
+        if (!pathsAreAcceptable(absolutePaths)) {
+            return false;
+        }
+
         QLocalSocket socket;
         socket.connectToServer(serverName());
         if (!socket.waitForConnected(200)) {
@@ -5211,7 +5233,7 @@ public:
 
         QByteArray payload;
         QDataStream stream(&payload, QIODevice::WriteOnly);
-        stream << paths << viewerMode << followMode;
+        stream << absolutePaths << viewerMode << followMode;
         if (payload.size() > maxPayloadBytes_) {
             return false;
         }
@@ -5223,22 +5245,143 @@ public:
     }
 
 private:
+    // The socket lives in a directory only this user can enter whenever the
+    // platform provides one ($XDG_RUNTIME_DIR or Qt's runtime location,
+    // both created 0700). That prevents another local user from squatting
+    // the well-known name in a shared /tmp and receiving our hand-offs. The
+    // name itself also carries the numeric uid, not just a hash of $HOME.
     static QString serverName()
     {
         const QByteArray userKey = QCryptographicHash::hash(
             QDir::homePath().toUtf8(), QCryptographicHash::Sha256).toHex().left(16);
+#if defined(Q_OS_UNIX)
+        const QString baseName = QStringLiteral("mdv-single-instance-%1-%2")
+            .arg(static_cast<qulonglong>(::getuid())).arg(QString::fromLatin1(userKey));
+        const QString runtimeDir = privateRuntimeDirectory();
+        if (!runtimeDir.isEmpty()) {
+            const QString fullPath = QDir(runtimeDir).filePath(baseName);
+            // sun_path is limited to ~108 bytes; an unusually deep runtime
+            // directory falls back to the name-only socket in the temp dir.
+            if (QFile::encodeName(fullPath).size() < 100) {
+                return fullPath;
+            }
+        }
+        return baseName;
+#else
         return QStringLiteral("mdv-single-instance-%1").arg(QString::fromLatin1(userKey));
+#endif
+    }
+
+#if defined(Q_OS_UNIX)
+    // Returns an existing directory owned by this uid with no group/other
+    // permissions, or an empty string when none is available.
+    static QString privateRuntimeDirectory()
+    {
+        QStringList candidates;
+        const QString xdg = qEnvironmentVariable("XDG_RUNTIME_DIR");
+        if (!xdg.isEmpty()) {
+            candidates.append(xdg);
+        }
+        candidates.append(QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation));
+        for (const QString &candidate : candidates) {
+            if (candidate.isEmpty()) {
+                continue;
+            }
+            struct stat st;
+            if (::lstat(QFile::encodeName(candidate).constData(), &st) != 0) {
+                continue;
+            }
+            if (!S_ISDIR(st.st_mode) || st.st_uid != ::getuid() || (st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+                continue;
+            }
+            return candidate;
+        }
+        return QString();
+    }
+
+    // Rejects connections that do not come from a process of the same uid,
+    // even if the socket file were somehow reachable by others.
+    static bool peerIsSameUser(const QLocalSocket *socket)
+    {
+        const int fd = static_cast<int>(socket->socketDescriptor());
+        if (fd < 0) {
+            return false;
+        }
+#if defined(Q_OS_LINUX)
+        struct ucred cred;
+        socklen_t length = sizeof(cred);
+        if (::getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &length) != 0) {
+            return false;
+        }
+        return cred.uid == ::getuid();
+#else
+        uid_t uid = 0;
+        gid_t gid = 0;
+        if (::getpeereid(fd, &uid, &gid) != 0) {
+            return false;
+        }
+        return uid == ::getuid();
+#endif
+    }
+#endif
+
+    // Every path must be absolute, already cleaned, and free of characters
+    // that cannot appear in a real file name; the receiver opens them as-is.
+    static bool pathsAreAcceptable(const QStringList &paths)
+    {
+        if (paths.size() > maxPathCount_) {
+            return false;
+        }
+        for (const QString &path : paths) {
+            if (path.isEmpty() || path.size() > maxPathCharacters_) {
+                return false;
+            }
+            if (!QDir::isAbsolutePath(path) || QDir::cleanPath(path) != path) {
+                return false;
+            }
+            for (const QChar ch : path) {
+                if (ch == QChar(0) || ch == QChar('\n') || ch == QChar('\r')) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     void acceptConnection()
     {
         while (QLocalSocket *socket = server_->nextPendingConnection()) {
+            if (activeConnections_ >= maxActiveConnections_) {
+                socket->abort();
+                socket->deleteLater();
+                continue;
+            }
+#if defined(Q_OS_UNIX)
+            if (!peerIsSameUser(socket)) {
+                socket->abort();
+                socket->deleteLater();
+                continue;
+            }
+#endif
+            ++activeConnections_;
+            connect(socket, &QObject::destroyed, this, [this] { --activeConnections_; });
+
             socket->setReadBufferSize(maxPayloadBytes_ + 1);
             connect(socket, &QIODevice::readyRead, socket, [socket] {
                 if (socket->bytesAvailable() > maxPayloadBytes_) {
                     socket->abort();
                 }
             });
+            // A client that connects and then stalls must not pin a slot
+            // forever; a legitimate hand-off completes in milliseconds.
+            auto *timeout = new QTimer(socket);
+            timeout->setSingleShot(true);
+            connect(timeout, &QTimer::timeout, socket, [socket] {
+                socket->abort();
+                socket->deleteLater();
+            });
+            timeout->start(connectionTimeoutMs_);
+
             connect(socket, &QLocalSocket::disconnected, this, [this, socket] {
                 QByteArray payload = socket->readAll();
                 if (payload.size() > maxPayloadBytes_) {
@@ -5251,14 +5394,8 @@ private:
                 bool followMode = false;
                 stream >> paths >> viewerMode >> followMode;
 
-                bool valid = stream.status() == QDataStream::Ok
-                    && stream.atEnd() && paths.size() <= maxPathCount_;
-                for (const QString &path : paths) {
-                    if (path.size() > maxPathCharacters_) {
-                        valid = false;
-                        break;
-                    }
-                }
+                const bool valid = stream.status() == QDataStream::Ok
+                    && stream.atEnd() && pathsAreAcceptable(paths);
 
                 if (valid && onFilesReceived) {
                     onFilesReceived(paths, viewerMode, followMode);
@@ -5271,6 +5408,9 @@ private:
     static constexpr qint64 maxPayloadBytes_ = 1024 * 1024;
     static constexpr qsizetype maxPathCount_ = 256;
     static constexpr qsizetype maxPathCharacters_ = 32768;
+    static constexpr int maxActiveConnections_ = 16;
+    static constexpr int connectionTimeoutMs_ = 5000;
+    int activeConnections_ = 0;
     QLocalServer *server_ = nullptr;
 };
 
