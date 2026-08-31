@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 English | [日本語](CHANGELOG.ja.md)
 
+## [0.6.5] - 2026-09-01
+
+### Added
+
+- **Export Preview** saves the current preview as a UTF-8 Markdown file in
+  original, bilingual, or translated form. Original-view export remains
+  available in read-only follow (`-f`) and session (`-s`) modes.
+
 ## [0.6.4] - 2026-08-29
 
 ### Added

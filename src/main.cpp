@@ -102,10 +102,11 @@
 #include "claude_log.h"
 #include "codex_log.h"
 #include "preview_interceptor.h"
+#include "preview_markdown.h"
 #include "preview_policy.h"
 
 #ifndef MDV_VERSION
-#define MDV_VERSION "0.6.4"
+#define MDV_VERSION "0.6.5"
 #endif
 
 // ---------------------------------------------------------------------------
@@ -165,73 +166,6 @@ static Heading parseHeading(const QString &line)
     }
 
     return {level, title};
-}
-
-struct MdBlock {
-    QString text;
-    int position = 0; // char offset of the block's first line in the source
-};
-
-// Blocks are groups of lines separated by blank lines, except that fenced
-// code and display math stay together; this is the unit of translation and
-// of pairing in the bilingual view.
-static QList<MdBlock> splitMarkdownBlocks(const QString &markdown)
-{
-    QList<MdBlock> blocks;
-    QStringList current;
-    int currentStart = 0;
-    int lineStart = 0;
-    bool inFence = false;
-    bool inDisplayMath = false;
-
-    const QStringList lines = markdown.split(QLatin1Char('\n'));
-    for (const QString &line : lines) {
-        const QString trimmed = line.trimmed();
-        if (!inFence && !inDisplayMath && trimmed.isEmpty()) {
-            if (!current.isEmpty()) {
-                blocks.append({current.join(QLatin1Char('\n')), currentStart});
-                current.clear();
-            }
-        } else {
-            if (current.isEmpty()) {
-                currentStart = lineStart;
-            }
-            current.append(line);
-            if (!inDisplayMath
-                && (trimmed.startsWith(QLatin1String("```")) || trimmed.startsWith(QLatin1String("~~~")))) {
-                inFence = !inFence;
-            }
-            if (!inFence && trimmed == QLatin1String("$$")) {
-                inDisplayMath = !inDisplayMath;
-            }
-        }
-        lineStart += static_cast<int>(line.size()) + 1;
-    }
-    if (!current.isEmpty()) {
-        blocks.append({current.join(QLatin1Char('\n')), currentStart});
-    }
-
-    return blocks;
-}
-
-// Code blocks and symbol-only blocks (horizontal rules etc.) pass through
-// untranslated.
-static bool blockIsTranslatable(const QString &block)
-{
-    const QString trimmed = block.trimmed();
-    if (trimmed.startsWith(QLatin1String("```")) || trimmed.startsWith(QLatin1String("~~~"))) {
-        return false;
-    }
-    if (trimmed.size() >= 4 && trimmed.startsWith(QLatin1String("$$"))
-        && trimmed.endsWith(QLatin1String("$$"))) {
-        return false;
-    }
-    for (const QChar c : trimmed) {
-        if (c.isLetter()) {
-            return true;
-        }
-    }
-    return false;
 }
 
 // Sort key for translation order: blocks from the viewport top downward
@@ -1462,6 +1396,11 @@ public:
     bool saveFile();
     bool saveFileAs();
     bool writeFile(const QString &path);
+    bool exportPreview();
+    bool canExportPreview() const
+    {
+        return previewMode_ == QLatin1String("original") || pendingTranslations_.isEmpty();
+    }
     bool confirmDiscardChanges();
     void checkForExternalChanges();
     void reparentToWindow(MainWindow *newWindow);
@@ -1606,18 +1545,19 @@ private:
     }
 
     QString translationCacheKey(const QString &block) const;
-    QList<MdBlock> translatableBlocksByPriority() const
+    QList<preview_markdown::Block> translatableBlocksByPriority() const
     {
-        QList<MdBlock> ordered;
-        const QList<MdBlock> blocks = splitMarkdownBlocks(editor_->toPlainText());
-        for (const MdBlock &block : blocks) {
-            if (blockIsTranslatable(block.text)) {
+        QList<preview_markdown::Block> ordered;
+        const QList<preview_markdown::Block> blocks = preview_markdown::splitBlocks(editor_->toPlainText());
+        for (const preview_markdown::Block &block : blocks) {
+            if (preview_markdown::isTranslatable(block.text)) {
                 ordered.append(block);
             }
         }
 
         const int topPos = editor_->cursorForPosition(QPoint(0, 0)).position();
-        std::stable_sort(ordered.begin(), ordered.end(), [topPos](const MdBlock &a, const MdBlock &b) {
+        std::stable_sort(ordered.begin(), ordered.end(), [topPos](
+            const preview_markdown::Block &a, const preview_markdown::Block &b) {
             return translationPriority(a.position, topPos) < translationPriority(b.position, topPos);
         });
         return ordered;
@@ -1921,6 +1861,13 @@ public:
         if (key == "open") return ja ? "開く(&O)..." : "&Open...";
         if (key == "save") return ja ? "保存(&S)" : "&Save";
         if (key == "saveAs") return ja ? "名前を付けて保存(&A)..." : "Save &As...";
+        if (key == "exportPreview") return ja ? "プレビューをエクスポート(&E)..." : "&Export Preview...";
+        if (key == "exportPreviewTitle") return ja ? "プレビューをエクスポート" : "Export Preview";
+        if (key == "exportFailed") return ja ? "エクスポートできませんでした" : "Export failed";
+        if (key == "exported") return ja ? "エクスポートしました: %1" : "Exported %1";
+        if (key == "exportSourceConflict") return ja
+            ? "開いている原文ファイルにはエクスポートできません。別のファイル名を指定してください。"
+            : "The preview cannot be exported over its open source file. Choose a different file name.";
         if (key == "closeTab") return ja ? "タブを閉じる(&W)" : "&Close Tab";
         if (key == "openInNewWindow") return ja ? "新しいウインドウで開く" : "Open in New Window";
         if (key == "recent") return ja ? "最近開いたファイル(&R)" : "Open &Recent";
@@ -2180,6 +2127,7 @@ public:
         originalModeAction_->setEnabled(hasTab);
         bilingualModeAction_->setEnabled(fullTranslationEnabled);
         translatedModeAction_->setEnabled(fullTranslationEnabled);
+        updateExportAction(tab);
 
         if (!hasTab) {
             return;
@@ -2190,6 +2138,12 @@ public:
         originalModeAction_->setChecked(tab->previewMode() == "original");
         bilingualModeAction_->setChecked(tab->previewMode() == "bilingual");
         translatedModeAction_->setChecked(tab->previewMode() == "translated");
+    }
+
+    void updateExportAction(DocumentTab *tab)
+    {
+        exportPreviewAction_->setEnabled(
+            tab != nullptr && tab == activeTab() && tab->canExportPreview());
     }
 
     void onEditorCopyAvailable(DocumentTab *tab, bool available)
@@ -2417,6 +2371,11 @@ private:
             if (DocumentTab *tab = activeTab()) tab->saveFileAs();
         });
 
+        exportPreviewAction_ = new QAction(this);
+        connect(exportPreviewAction_, &QAction::triggered, this, [this] {
+            if (DocumentTab *tab = activeTab()) tab->exportPreview();
+        });
+
         closeTabAction_ = new QAction(this);
         closeTabAction_->setShortcut(QKeySequence::Close);
         connect(closeTabAction_, &QAction::triggered, this, [this] {
@@ -2603,6 +2562,7 @@ private:
         fileMenu_->addSeparator();
         fileMenu_->addAction(saveAction_);
         fileMenu_->addAction(saveAsAction_);
+        fileMenu_->addAction(exportPreviewAction_);
         fileMenu_->addSeparator();
         fileMenu_->addAction(closeTabAction_);
         fileMenu_->addSeparator();
@@ -2675,6 +2635,7 @@ private:
         openAction_->setText(uiText("open"));
         saveAction_->setText(uiText("save"));
         saveAsAction_->setText(uiText("saveAs"));
+        exportPreviewAction_->setText(uiText("exportPreview"));
         closeTabAction_->setText(uiText("closeTab"));
         clearRecentFilesAction_->setText(uiText("clearRecent"));
         exitAction_->setText(uiText("exit"));
@@ -3057,6 +3018,7 @@ private:
         const bool readOnly = followMode_ || tab->isFollowMode();
         saveAction_->setEnabled(!readOnly);
         saveAsAction_->setEnabled(!readOnly);
+        updateExportAction(tab);
         undoAction_->setEnabled(!readOnly && tab->editor()->document()->isUndoAvailable());
         redoAction_->setEnabled(!readOnly && tab->editor()->document()->isRedoAvailable());
 
@@ -3527,6 +3489,7 @@ private:
     QAction *openAction_ = nullptr;
     QAction *saveAction_ = nullptr;
     QAction *saveAsAction_ = nullptr;
+    QAction *exportPreviewAction_ = nullptr;
     QAction *closeTabAction_ = nullptr;
     QAction *clearRecentFilesAction_ = nullptr;
     QAction *exitAction_ = nullptr;
@@ -4497,6 +4460,80 @@ bool DocumentTab::saveFileAs()
     return writeFile(path);
 }
 
+bool DocumentTab::exportPreview()
+{
+    if (!canExportPreview()) {
+        return false;
+    }
+
+    preview_markdown::Mode mode = preview_markdown::Mode::Original;
+    QString modeSuffix = QStringLiteral("original");
+    if (previewMode_ == QLatin1String("bilingual")) {
+        mode = preview_markdown::Mode::Bilingual;
+        modeSuffix = QStringLiteral("bilingual");
+    } else if (previewMode_ == QLatin1String("translated")) {
+        mode = preview_markdown::Mode::Translated;
+        modeSuffix = QStringLiteral("translated");
+    }
+
+    QString baseName = currentFile_.isEmpty()
+        ? QStringLiteral("untitled")
+        : QFileInfo(currentFile_).completeBaseName();
+    if (baseName.isEmpty()) {
+        baseName = QStringLiteral("preview");
+    }
+    const QString suggestedName = QStringLiteral("%1-%2.md").arg(baseName, modeSuffix);
+    const QString path = QFileDialog::getSaveFileName(
+        window_,
+        window_->uiText("exportPreviewTitle"),
+        QDir(window_->saveDialogDir()).filePath(suggestedName),
+        window_->markdownFilter());
+    if (path.isEmpty()) {
+        return false;
+    }
+
+    if (!currentFile_.isEmpty() && QFileInfo(path) == QFileInfo(currentFile_)) {
+        QMessageBox::warning(
+            window_, window_->uiText("exportFailed"), window_->uiText("exportSourceConflict"));
+        return false;
+    }
+
+    const QString source = editor_->toPlainText();
+    QHash<QString, QString> translations;
+    if (mode != preview_markdown::Mode::Original) {
+        for (const preview_markdown::Block &block : preview_markdown::splitBlocks(source)) {
+            if (!preview_markdown::isTranslatable(block.text)) {
+                continue;
+            }
+            const QString key = translationCacheKey(block.text);
+            const auto translation = translationCache_.constFind(key);
+            if (translation != translationCache_.cend()) {
+                translations.insert(block.text, *translation);
+            }
+        }
+    }
+    const QString content = preview_markdown::composeExport(
+        source, mode, translations, window_->uiText("trPending"), window_->uiText("trFailedBlock"));
+
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(window_, window_->uiText("exportFailed"), file.errorString());
+        return false;
+    }
+    QTextStream out(&file);
+    out.setEncoding(QStringConverter::Utf8);
+    out << content;
+    out.flush();
+    if (out.status() != QTextStream::Ok || !file.commit()) {
+        QMessageBox::warning(window_, window_->uiText("exportFailed"), file.errorString());
+        return false;
+    }
+
+    window_->setSaveDialogDir(QFileInfo(path).absolutePath());
+    window_->statusBar()->showMessage(window_->uiText("exported").arg(path), 3000);
+    return true;
+}
+
 bool DocumentTab::writeFile(const QString &path)
 {
     if (followMode_) {
@@ -4820,8 +4857,8 @@ void DocumentTab::ensureTranslations()
     window_->translator()->setMaxInFlight(window_->ollamaParallel());
 
     QStringList orderedKeys;
-    const QList<MdBlock> ordered = translatableBlocksByPriority();
-    for (const MdBlock &block : ordered) {
+    const QList<preview_markdown::Block> ordered = translatableBlocksByPriority();
+    for (const preview_markdown::Block &block : ordered) {
         const QString key = translationCacheKey(block.text);
         if (translationCache_.contains(key)) {
             continue;
@@ -4837,6 +4874,7 @@ void DocumentTab::ensureTranslations()
     if (!pendingTranslations_.isEmpty() && isActive()) {
         window_->statusBar()->showMessage(window_->uiText("translating").arg(pendingTranslations_.size()));
     }
+    window_->updateExportAction(this);
 }
 
 // Called (debounced) when the editor viewport moves: waiting jobs are
@@ -4848,8 +4886,8 @@ void DocumentTab::reprioritizeTranslations()
     }
 
     QStringList orderedKeys;
-    const QList<MdBlock> ordered = translatableBlocksByPriority();
-    for (const MdBlock &block : ordered) {
+    const QList<preview_markdown::Block> ordered = translatableBlocksByPriority();
+    for (const preview_markdown::Block &block : ordered) {
         const QString key = translationCacheKey(block.text);
         if (pendingTranslations_.contains(key)) {
             orderedKeys.append(key);
@@ -4865,15 +4903,15 @@ QString DocumentTab::composePreviewHtml() const
         return markdownToHtml(source);
     }
 
-    const QList<MdBlock> blocks = splitMarkdownBlocks(source);
+    const QList<preview_markdown::Block> blocks = preview_markdown::splitBlocks(source);
 
     // Untranslated and failed blocks fall back to the original text so
     // the document fills in progressively as results arrive.
     if (previewMode_ == "translated") {
         QStringList parts;
         parts.reserve(blocks.size());
-        for (const MdBlock &block : blocks) {
-            const QString translated = blockIsTranslatable(block.text)
+        for (const preview_markdown::Block &block : blocks) {
+            const QString translated = preview_markdown::isTranslatable(block.text)
                 ? translationCache_.value(translationCacheKey(block.text))
                 : QString();
             parts.append(translated.isEmpty() ? block.text : translated);
@@ -4882,10 +4920,10 @@ QString DocumentTab::composePreviewHtml() const
     }
 
     QString html;
-    for (const MdBlock &blockItem : blocks) {
+    for (const preview_markdown::Block &blockItem : blocks) {
         const QString &block = blockItem.text;
         html += markdownToHtml(block);
-        if (!blockIsTranslatable(block)) {
+        if (!preview_markdown::isTranslatable(block)) {
             continue;
         }
         const QString key = translationCacheKey(block);
@@ -4925,6 +4963,7 @@ void DocumentTab::refreshTranslatedPreview()
     } else {
         window_->statusBar()->showMessage(window_->uiText("translating").arg(pendingTranslations_.size()));
     }
+    window_->updateExportAction(this);
 }
 
 void DocumentTab::reloadPreviewTemplate()

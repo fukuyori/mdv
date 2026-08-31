@@ -34,6 +34,8 @@ Viewer mode (`-v`), with the editor pane hidden:
 - Anchor links to headings (`#section`) work inside the preview;
   external links open in the system browser
 - Create, open, save, and save-as Markdown files
+- Export the current original, bilingual, or translated preview as a UTF-8
+  Markdown file; original-view export also works in follow and session modes
 - Tabs: edit multiple Markdown files at once, each with its own editor,
   outline, and preview. Open several files at once from the command line or
   by dropping them onto the window; opening a file that's already open
@@ -233,6 +235,7 @@ contains:
 | Target | What it checks |
 | --- | --- |
 | `mdv_security_test` | md4c renders raw HTML as escaped text; pathological link-reference expansion stays bounded |
+| `mdv_preview_markdown_test` | Markdown export for original, bilingual, and translated views, including pending and failed translation fallbacks |
 | `mdv_preview_policy_test` | the local-resource policy allows only regular files under the document directory, rejecting `..` escapes, absolute paths, directories, symlinks that resolve outside, and non-`file:` URLs |
 | `mdv_preview_webengine_test` | a hostile document loaded into an offscreen `QWebEnginePage` with the production settings, CSP, and request interceptor cannot run script, read files outside its directory, or reach a local HTTP server |
 | `mdv_codex_log_test`, `mdv_claude_log_test`, `mdv_antigravity_log_test` | the AI session log parsers used by follow mode |
@@ -377,6 +380,22 @@ when the app is launched from Finder) and then follow the directory you
 last used; Save As keeps only the file name of the open document, so an
 opened file's location never overrides your chosen save directory.
 
+## Preview export
+
+Choose **File > Export Preview** to save the currently displayed preview as
+a UTF-8 Markdown file. Original view exports the source, bilingual view
+interleaves each source block with its translation, and translation view
+exports translated blocks while retaining non-translated code, math, and
+similar blocks. Export is disabled until an in-progress full-preview
+translation finishes. As in the preview, a failed block gets a
+"(translation failed)" marker in bilingual output and falls back to its
+source text in translation-only output.
+
+Export is separate from Save and never modifies the open source file. It is
+also available in follow (`-f`) and session (`-s`) modes; because those modes
+do not offer bilingual or translation-only views, they export the currently
+displayed original text.
+
 ## Translation
 
 The preview can be translated with a local [Ollama](https://ollama.com)
@@ -455,6 +474,7 @@ public issue.
 
 ```
 src/main.cpp              Application (window, editor, preview pipeline, sync)
+src/preview_markdown.*    Preview block splitting and Markdown export
 src/preview_policy.*      Local-resource policy and CSP for the preview
 src/preview_interceptor.* WebEngine request interceptor applying that policy
 src/codex_log.*           Codex rollout log parser (follow mode)
