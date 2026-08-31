@@ -503,6 +503,17 @@ scripts/macos_build_release.sh
 scripts/macos_generate_icon.sh
 ```
 
+Qt ランタイムの配置とアプリの署名:
+
+```sh
+scripts/macos_sign_app.sh
+```
+
+`build-release/mdv.app` に macdeployqt で Qt を配置し、参照の修正を行い、
+Developer ID Application で署名して `dist/macos/stage/mdv.app` に出力します。
+下の DMG スクリプトと pkg スクリプトはどちらもこれを呼ぶので、通常は直接
+実行する必要はありません。
+
 署名・DMG 作成・公証(ノータライズ)・ステープル:
 
 ```sh
@@ -519,6 +530,41 @@ CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)" \
 NOTARY_PROFILE="notarytool" \
 scripts/macos_sign_dmg_notarize.sh
 ```
+
+署名済みアプリから pkg インストーラーを作成:
+
+```sh
+scripts/macos_package_pkg.sh
+```
+
+pkg は `dist/macos/mdv-<version>-macos-arm.pkg` として出力されます。
+このスクリプトも `scripts/macos_sign_app.sh` を呼ぶので、DMG を作らずに pkg
+だけをビルドできます。DMG に続けて pkg を作る場合は `SKIP_SIGN_APP=1` を
+指定すると、`dist/macos/stage/mdv.app` を再利用して二重の配置・署名を
+省けます:
+
+```sh
+scripts/macos_sign_dmg_notarize.sh
+SKIP_SIGN_APP=1 scripts/macos_package_pkg.sh
+```
+
+pkg は `mdv.app` を `/Applications` にインストールし、postinstall で
+`/usr/local/bin/mdv` にランチャーを作成します。これでターミナルから
+`mdv -s` のように直接起動できます。ランチャーはシンボリックリンクではなく
+`exec` するラッパースクリプトです。Qt はプラグインの探索パスを実行ファイル
+自身のパスから決めるため、シンボリックリンク経由では `Contents/PlugIns` を
+見つけられず起動に失敗します。
+
+pkg の署名には、アプリ署名に使う Developer ID Application とは別の
+Developer ID Installer 証明書が必要です:
+
+```sh
+INSTALLER_IDENTITY="Developer ID Installer: Name (TEAMID)" \
+NOTARY_PROFILE="notarytool" \
+scripts/macos_package_pkg.sh
+```
+
+`SKIP_NOTARIZE=1` を指定すると、署名だけ行って公証をスキップします。
 
 `scripts/macos/entitlements.plist` の Hardened Runtime エンタイトルメントには、
 Qt WebEngine(Chromium)が必要とする JIT 関連のキーが含まれています。
@@ -566,3 +612,58 @@ $env:CODESIGN_CERT = "<証明書の SHA1 サムプリント>"
 `http://timestamp.digicert.com`)、`CODESIGN_DIGEST`(既定は `sha256`)、
 `CODESIGN_CSP` と `CODESIGN_KEY_CONTAINER`(ハードウェアトークン用)、
 `SIGNTOOL`(`signtool.exe` のパス。`-SignToolPath` でも指定可)。
+
+## アンインストール
+
+### macOS
+
+pkg インストーラーで入れた場合:
+
+```sh
+sudo rm -rf /Applications/mdv.app
+sudo rm -f /usr/local/bin/mdv
+sudo pkgutil --forget com.fukuyori.mdv
+```
+
+pkg にアンインストーラーは付属しません。`pkgutil --forget` はインストール
+記録(レシート)を削除するだけで、ファイル自体は消さないため、上の 2 つの
+`rm` と併せて実行してください。
+
+DMG からドラッグ&ドロップで入れた場合は `/Applications/mdv.app` をゴミ箱へ
+移すだけです。
+
+設定とキャッシュも消す場合(インストール方法によらず共通、sudo 不要):
+
+```sh
+rm -f  ~/Library/Preferences/com.mdv.mdv.plist
+rm -rf ~/Library/Caches/mdv
+rm -rf ~/Library/"Application Support"/mdv
+rm -rf ~/Library/"Saved Application State"/com.fukuyori.mdv.savedState
+```
+
+環境によっては存在しないパスもありますが、そのまま実行して問題ありません。
+
+### Windows
+
+「設定 > アプリ > インストールされているアプリ」から mdv をアンインストール
+するか、インストール先(既定は `C:\Program Files\mdv`)の `unins000.exe` を
+実行します。
+
+### Linux
+
+`.deb` で入れた場合:
+
+```sh
+sudo apt remove mdv
+```
+
+tarball の `install.sh` で入れた場合は、同じアーカイブに入っている
+`uninstall.sh` を、インストール時と同じ `PREFIX` で実行します(既定は
+`~/.local`):
+
+```sh
+./uninstall.sh
+PREFIX=/usr/local sudo ./uninstall.sh   # システム全体に入れた場合
+```
+
+AppImage は単一ファイルなので、`.AppImage` を削除するだけです。

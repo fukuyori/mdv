@@ -523,6 +523,17 @@ Regenerate the macOS app icon from `resources/icon.svg`:
 scripts/macos_generate_icon.sh
 ```
 
+Deploy the Qt runtime into the app bundle and sign it:
+
+```sh
+scripts/macos_sign_app.sh
+```
+
+This runs macdeployqt against `build-release/mdv.app`, fixes up its library
+references, signs it with the Developer ID Application identity, and writes the
+result to `dist/macos/stage/mdv.app`. Both the DMG and pkg scripts below invoke
+it, so it rarely needs to be run on its own.
+
 Sign, create a DMG, submit it for notarization, and staple the notarization ticket:
 
 ```sh
@@ -538,6 +549,40 @@ CODESIGN_IDENTITY="Developer ID Application: Name (TEAMID)" \
 NOTARY_PROFILE="notarytool" \
 scripts/macos_sign_dmg_notarize.sh
 ```
+
+Build a pkg installer from the signed app:
+
+```sh
+scripts/macos_package_pkg.sh
+```
+
+The pkg is written as `dist/macos/mdv-<version>-macos-arm.pkg`. This script also
+invokes `scripts/macos_sign_app.sh`, so a pkg can be built without producing a
+DMG. When building both, pass `SKIP_SIGN_APP=1` to reuse the existing
+`dist/macos/stage/mdv.app` instead of deploying and signing the app twice:
+
+```sh
+scripts/macos_sign_dmg_notarize.sh
+SKIP_SIGN_APP=1 scripts/macos_package_pkg.sh
+```
+
+The pkg installs `mdv.app` into `/Applications` and its postinstall script
+creates a launcher at `/usr/local/bin/mdv`, so the app can be started from a
+terminal as `mdv -s`. The launcher is a wrapper that `exec`s the bundle
+executable rather than a symlink to it: Qt derives its plugin search path from
+the executable's own path, so a symlink would fail to find `Contents/PlugIns`
+and the app would not start.
+
+Signing the pkg needs a Developer ID Installer certificate, which is separate
+from the Developer ID Application certificate used to sign the app:
+
+```sh
+INSTALLER_IDENTITY="Developer ID Installer: Name (TEAMID)" \
+NOTARY_PROFILE="notarytool" \
+scripts/macos_package_pkg.sh
+```
+
+Set `SKIP_NOTARIZE=1` to sign the pkg without submitting it for notarization.
 
 The hardened-runtime entitlements in `scripts/macos/entitlements.plist`
 include the JIT entitlements that Qt WebEngine (Chromium) requires.
@@ -585,3 +630,57 @@ and the uninstaller. Optional environment variables:
 `http://timestamp.digicert.com`), `CODESIGN_DIGEST` (default `sha256`),
 `CODESIGN_CSP` and `CODESIGN_KEY_CONTAINER` (hardware tokens), and `SIGNTOOL`
 (explicit `signtool.exe` path, also settable with `-SignToolPath`).
+
+## Uninstall
+
+### macOS
+
+Installed from the pkg installer:
+
+```sh
+sudo rm -rf /Applications/mdv.app
+sudo rm -f /usr/local/bin/mdv
+sudo pkgutil --forget com.fukuyori.mdv
+```
+
+The pkg ships no uninstaller. `pkgutil --forget` only drops the installation
+receipt and leaves the files in place, so run it together with the two `rm`
+commands above.
+
+Installed by dragging from the DMG: move `/Applications/mdv.app` to the Trash.
+
+To remove the settings and caches as well (same for either installation
+method, no sudo needed):
+
+```sh
+rm -f  ~/Library/Preferences/com.mdv.mdv.plist
+rm -rf ~/Library/Caches/mdv
+rm -rf ~/Library/"Application Support"/mdv
+rm -rf ~/Library/"Saved Application State"/com.fukuyori.mdv.savedState
+```
+
+Some of these paths may not exist depending on how the app was used; running
+the commands anyway is harmless.
+
+### Windows
+
+Uninstall mdv from Settings > Apps > Installed apps, or run `unins000.exe` in
+the installation directory (`C:\Program Files\mdv` by default).
+
+### Linux
+
+Installed from the `.deb`:
+
+```sh
+sudo apt remove mdv
+```
+
+Installed with the tarball's `install.sh`: run the `uninstall.sh` from the same
+archive with the `PREFIX` used at install time (`~/.local` by default):
+
+```sh
+./uninstall.sh
+PREFIX=/usr/local sudo ./uninstall.sh   # for a system-wide install
+```
+
+The AppImage is a single file, so deleting the `.AppImage` is enough.
