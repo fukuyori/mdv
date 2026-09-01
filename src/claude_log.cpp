@@ -1,6 +1,8 @@
 #include "claude_log.h"
+#include "path_utils.h"
 
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -81,6 +83,26 @@ QString messageText(const QJsonObject &message)
     return parts.join(QLatin1String("\n\n"));
 }
 
+QString sessionCwd(const QByteArray &sample)
+{
+    qsizetype start = 0;
+    int inspected = 0;
+    while (start < sample.size() && inspected < 200) {
+        qsizetype end = sample.indexOf('\n', start);
+        if (end < 0) {
+            end = sample.size();
+        }
+        const QString cwd = parseObject(sample.mid(start, end - start))
+                                .value(QStringLiteral("cwd")).toString();
+        if (!cwd.isEmpty()) {
+            return cwd;
+        }
+        start = end + 1;
+        ++inspected;
+    }
+    return {};
+}
+
 } // namespace
 
 bool isClaudeSessionLog(const QString &path, const QByteArray &sample)
@@ -127,13 +149,29 @@ QString claudeProjectDirName(const QString &cwd)
     return name;
 }
 
-QString latestClaudeSessionForCwd(const QString &cwd)
+bool claudeSessionMatchesCwd(const QByteArray &sample, const QString &cwd)
 {
-    const QDir projectDir(
-        QDir::home().filePath(QStringLiteral(".claude/projects/") + claudeProjectDirName(cwd)));
+    return pathsReferToSameLocation(sessionCwd(sample), cwd);
+}
+
+QString latestClaudeSessionForCwd(const QString &cwd, const QString &projectsRoot)
+{
+    const QDir root(projectsRoot.isEmpty()
+            ? QDir::home().filePath(QStringLiteral(".claude/projects"))
+            : projectsRoot);
+    const QDir projectDir(root.filePath(claudeProjectDirName(cwd)));
     const QFileInfoList sessions = projectDir.entryInfoList(
         QStringList() << QStringLiteral("*.jsonl"), QDir::Files, QDir::Time);
-    return sessions.isEmpty() ? QString() : sessions.first().absoluteFilePath();
+    for (const QFileInfo &info : sessions) {
+        QFile file(info.absoluteFilePath());
+        if (!file.open(QIODevice::ReadOnly)) {
+            continue;
+        }
+        if (claudeSessionMatchesCwd(file.read(1024 * 1024), cwd)) {
+            return info.absoluteFilePath();
+        }
+    }
+    return {};
 }
 
 QString renderClaudeSessionLog(

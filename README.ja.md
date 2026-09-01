@@ -48,8 +48,8 @@ C++ と Qt Widgets で作られたシンプルな Markdown ビュワー/エデ�
 - Codexの`rollout-*.jsonl`イベントログ、Claude Codeのセッション`.jsonl`
   ファイル、およびAntigravityの`transcript.jsonl`ログを追従表示モードで開くと、
   ユーザーとエージェントの本文だけを時刻付きの読みやすい会話として表示
-- セッションモード(`-s`)で、ログのパスを指定せずに最終更新されたAI
-  セッション(Codex, Claude, Antigravity)を検出して追従表示
+- セッションモード(`-s`)で、ログのパスを指定せずにカレントディレクトリで
+  最終更新されたAIセッション(Codex, Claude, Antigravity)を検出して追従表示
 - 文字コードの安全性: UTF-8 として読み込み(BOM 付き UTF-16/32 は自動判別し、
   保存時も同じエンコーディングを維持)。正しくデコードできないファイルは
   開く前・保存前に警告
@@ -356,8 +356,12 @@ Antigravityのトランスクリプトログ(`transcript.jsonl` / `transcript_fu
 mdv -s
 ```
 
-`~/.codex/sessions`、`~/.claude/projects`、および `~/.gemini/antigravity-cli/brain` を検索し、
-更新時刻が最も新しい有効なAIセッションログを自動選択して追従表示モードで開きます。
+Codex、Claude、Antigravityのセッション保存先を検索し、カレントディレクトリに
+対応する有効なセッションのうち、更新時刻が最も新しいログを追従表示モードで
+開きます。Antigravityは
+`~/.gemini/antigravity-cli/cache/conversation_metadata.json`と
+`last_conversations.json`で会話と作業フォルダを対応付けます。作業フォルダとの一致を
+確認できないセッションは選択しません。`-s`とファイルパスは同時に指定できません。
 
 末尾から上へスクロールすると自動スクロールが一時停止し、追記があっても閲覧中の
 位置を維持します。末尾までスクロールして戻るか `Esc` キーを押すと自動追従を

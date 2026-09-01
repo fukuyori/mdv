@@ -3,7 +3,11 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTemporaryDir>
+#include <QUrl>
 
 #include <cstdlib>
 #include <iostream>
@@ -26,6 +30,14 @@ void writeLog(const QString &path, const QByteArray &data, const QDateTime &modi
     require(file.flush(), "could not flush a test transcript log");
     require(file.setFileTime(modified, QFileDevice::FileModificationTime),
         "could not set a test transcript timestamp");
+}
+
+void writeJson(const QString &path, const QJsonObject &object)
+{
+    QFile file(path);
+    require(file.open(QIODevice::WriteOnly), "could not create an Antigravity cache");
+    const QByteArray data = QJsonDocument(object).toJson(QJsonDocument::Compact);
+    require(file.write(data) == data.size(), "could not write an Antigravity cache");
 }
 
 } // namespace
@@ -71,22 +83,69 @@ int main()
     require(!markdown.contains(QLatin1String("internal update")),
         "internal update step was rendered");
 
-    QTemporaryDir brainDir;
-    require(brainDir.isValid(), "could not create a temporary brain directory");
-    QDir root(brainDir.path());
-    require(root.mkpath(QStringLiteral("conv1/.system_generated/logs")),
+    QTemporaryDir antigravityRoot;
+    require(antigravityRoot.isValid(),
+        "could not create a temporary Antigravity directory");
+    QDir root(antigravityRoot.path());
+    require(root.mkpath(QStringLiteral("cache")),
+        "could not create an Antigravity cache directory");
+    require(root.mkpath(QStringLiteral("brain/conv1/.system_generated/logs")),
         "could not create conv1 directory");
-    require(root.mkpath(QStringLiteral("conv2/.system_generated/logs")),
+    require(root.mkpath(QStringLiteral("brain/conv2/.system_generated/logs")),
         "could not create conv2 directory");
+    require(root.mkpath(QStringLiteral("brain/conv3/.system_generated/logs")),
+        "could not create conv3 directory");
+    require(root.mkpath(QStringLiteral("project-a"))
+            && root.mkpath(QStringLiteral("project-b")),
+        "could not create Antigravity workspaces");
 
-    const QString older = root.filePath(QStringLiteral("conv1/.system_generated/logs/transcript.jsonl"));
-    const QString newest = root.filePath(QStringLiteral("conv2/.system_generated/logs/transcript.jsonl"));
+    const QString projectA = root.filePath(QStringLiteral("project-a"));
+    const QString projectB = root.filePath(QStringLiteral("project-b"));
+    const QString older = root.filePath(
+        QStringLiteral("brain/conv1/.system_generated/logs/transcript.jsonl"));
+    const QString foreign = root.filePath(
+        QStringLiteral("brain/conv2/.system_generated/logs/transcript.jsonl"));
+    const QString newest = root.filePath(
+        QStringLiteral("brain/conv3/.system_generated/logs/transcript.jsonl"));
     const QDateTime now = QDateTime::currentDateTimeUtc();
 
     writeLog(older, transcriptSample, now.addSecs(-20));
-    writeLog(newest, transcriptSample, now.addSecs(-10));
+    writeLog(foreign, transcriptSample, now.addSecs(-10));
+    writeLog(newest, transcriptSample, now.addSecs(-5));
 
-    const QString selected = mdv::latestAntigravitySession(brainDir.path());
+    QJsonObject summaryA;
+    summaryA.insert(QStringLiteral("WorkspaceURIs"),
+        QJsonArray{QUrl::fromLocalFile(projectA).toString()});
+    QJsonObject summaryB;
+    summaryB.insert(QStringLiteral("WorkspaceURIs"),
+        QJsonArray{QUrl::fromLocalFile(projectB).toString()});
+    QJsonObject conversationA;
+    conversationA.insert(QStringLiteral("summary"), summaryA);
+    QJsonObject conversationB;
+    conversationB.insert(QStringLiteral("summary"), summaryB);
+    QJsonObject conversations;
+    conversations.insert(QStringLiteral("conv1"), conversationA);
+    conversations.insert(QStringLiteral("conv2"), conversationB);
+    QJsonObject metadata;
+    metadata.insert(QStringLiteral("conversations"), conversations);
+    writeJson(root.filePath(QStringLiteral("cache/conversation_metadata.json")), metadata);
+
+    const QString metadataSelected = mdv::latestAntigravitySessionForCwd(
+        projectA, antigravityRoot.path());
+    require(metadataSelected == older,
+        "an Antigravity metadata session from another workspace was selected");
+
+    QJsonObject lastConversations;
+    lastConversations.insert(projectA, QStringLiteral("conv3"));
+    writeJson(root.filePath(QStringLiteral("cache/last_conversations.json")),
+        lastConversations);
+    const QString selectedForCwd = mdv::latestAntigravitySessionForCwd(
+        projectA, antigravityRoot.path());
+    require(selectedForCwd == newest,
+        "the latest Antigravity session for the working directory was not selected");
+
+    const QString selected = mdv::latestAntigravitySession(
+        root.filePath(QStringLiteral("brain")));
     require(selected == newest, "the newest valid Antigravity session was not selected");
 
     const QString empty = mdv::renderAntigravitySessionLog(

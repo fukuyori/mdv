@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 English | [日本語](CHANGELOG.ja.md)
 
+## [0.6.6] - 2026-09-01
+
+### Fixed
+
+- Session mode (`-s`) now limits Codex, Claude, and Antigravity discovery to
+  sessions associated with the current directory. Path comparison accounts
+  for normalized and case-insensitive Windows paths, and Antigravity workspace
+  mappings are read from its conversation caches.
+
 ## [0.6.5] - 2026-09-01
 
 ### Added

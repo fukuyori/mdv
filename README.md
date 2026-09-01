@@ -51,7 +51,8 @@ Viewer mode (`-v`), with the editor pane hidden:
   and Antigravity `transcript.jsonl` logs opened in follow mode are rendered
   as readable, timestamped conversations with user and assistant text.
 - Session mode (`-s`) finds and follows the most recently updated AI session
-  (Codex, Claude, or Antigravity) without needing a manual log path.
+  (Codex, Claude, or Antigravity) for the current directory without needing a
+  manual log path.
 - Encoding safety: files are read as UTF-8 (UTF-16/32 with BOM are detected
   and preserved on save), and a warning is shown before opening or saving a
   file that did not decode cleanly
@@ -366,8 +367,12 @@ Instead of locating an AI log file by hand, `-s` finds and follows the latest AI
 mdv -s
 ```
 
-This searches all session logs under `~/.codex/sessions`, `~/.claude/projects`, and `~/.gemini/antigravity-cli/brain`, and opens the most recently modified valid session log in follow mode.
-cannot be combined with explicit file paths.
+This searches the Codex, Claude, and Antigravity session stores and opens the
+most recently modified valid session associated with the current directory in
+follow mode. Antigravity conversations are matched to the current directory
+through `~/.gemini/antigravity-cli/cache/conversation_metadata.json` and
+`last_conversations.json`. A session without a matching recorded working
+directory is not selected. `-s` cannot be combined with explicit file paths.
 
 Scrolling away from the bottom pauses automatic scrolling, so incoming text
 does not interrupt reading earlier content. Automatic following resumes when

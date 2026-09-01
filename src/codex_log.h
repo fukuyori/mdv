@@ -11,9 +11,11 @@ bool isCodexEventLog(const QString &path, const QByteArray &sample);
 // recorded working directory matches cwd.
 bool codexSessionMatchesCwd(const QByteArray &sample, const QString &cwd);
 
-// Most recently modified rollout log recorded for the working directory, or an
-// empty string when none exists.
-QString latestCodexSessionForCwd(const QString &cwd);
+// Most recently modified rollout log recorded for the working directory. An
+// empty sessionsRoot uses ~/.codex/sessions. Returns an empty string when none
+// exists.
+QString latestCodexSessionForCwd(
+    const QString &cwd, const QString &sessionsRoot = QString());
 
 // Most recently modified valid rollout log under sessionsRoot. An empty root
 // uses ~/.codex/sessions. Returns an empty string when no session exists.

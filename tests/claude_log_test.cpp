@@ -1,5 +1,12 @@
 #include "claude_log.h"
 
+#include <QDateTime>
+#include <QDir>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QTemporaryDir>
+
 #include <cstdlib>
 #include <iostream>
 
@@ -11,6 +18,26 @@ void require(bool condition, const char *message)
         std::cerr << message << '\n';
         std::exit(EXIT_FAILURE);
     }
+}
+
+void writeSession(const QString &path, const QString &cwd, const QDateTime &modified)
+{
+    QJsonObject entry;
+    entry.insert(QStringLiteral("type"), QStringLiteral("user"));
+    entry.insert(QStringLiteral("cwd"), cwd);
+    entry.insert(QStringLiteral("sessionId"), QStringLiteral("session-id"));
+    QJsonObject message;
+    message.insert(QStringLiteral("role"), QStringLiteral("user"));
+    message.insert(QStringLiteral("content"), QStringLiteral("Hello"));
+    entry.insert(QStringLiteral("message"), message);
+
+    QFile file(path);
+    require(file.open(QIODevice::WriteOnly), "could not create a Claude session log");
+    const QByteArray data = QJsonDocument(entry).toJson(QJsonDocument::Compact) + '\n';
+    require(file.write(data) == data.size(), "could not write a Claude session log");
+    require(file.flush(), "could not flush a Claude session log");
+    require(file.setFileTime(modified, QFileDevice::FileModificationTime),
+        "could not set a Claude session timestamp");
 }
 
 } // namespace
@@ -87,6 +114,33 @@ int main()
     require(mdv::claudeProjectDirName(QStringLiteral("/tmp/my_app.v2"))
             == QLatin1String("-tmp-my-app-v2"),
         "underscore and dot were not encoded as dashes");
+
+    QTemporaryDir projectsRoot;
+    QTemporaryDir workspaceRoot;
+    require(projectsRoot.isValid() && workspaceRoot.isValid(),
+        "could not create temporary Claude directories");
+    QDir workspace(workspaceRoot.path());
+    require(workspace.mkpath(QStringLiteral("project"))
+            && workspace.mkpath(QStringLiteral("other")),
+        "could not create temporary Claude workspaces");
+    const QString cwd = workspace.filePath(QStringLiteral("project"));
+    const QString foreignCwd = workspace.filePath(QStringLiteral("other"));
+    const QString projectDir = QDir(projectsRoot.path()).filePath(
+        mdv::claudeProjectDirName(cwd));
+    require(QDir().mkpath(projectDir), "could not create a Claude project directory");
+    const QString matching = QDir(projectDir).filePath(QStringLiteral("matching.jsonl"));
+    const QString foreign = QDir(projectDir).filePath(QStringLiteral("foreign.jsonl"));
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    writeSession(matching, cwd, now.addSecs(-10));
+    writeSession(foreign, foreignCwd, now.addSecs(-5));
+    require(mdv::latestClaudeSessionForCwd(cwd, projectsRoot.path()) == matching,
+        "a newer Claude session from another working directory was selected");
+
+    QFile matchingFile(matching);
+    require(matchingFile.open(QIODevice::ReadOnly),
+        "could not reopen the matching Claude session");
+    require(mdv::claudeSessionMatchesCwd(matchingFile.readAll(), cwd),
+        "the matching Claude session cwd was not detected");
 
     const QString empty = mdv::renderClaudeSessionLog(
         QStringLiteral("{broken"), QStringLiteral("Conversation"), QStringLiteral("User"),

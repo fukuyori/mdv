@@ -106,7 +106,7 @@
 #include "preview_policy.h"
 
 #ifndef MDV_VERSION
-#define MDV_VERSION "0.6.5"
+#define MDV_VERSION "0.6.6"
 #endif
 
 // ---------------------------------------------------------------------------
@@ -5506,7 +5506,7 @@ int main(int argc, char *argv[])
     parser.addOption(followModeOption);
     QCommandLineOption sessionOption(
         QStringList() << "s" << "session",
-        "Open and follow the latest Codex, Claude, or Antigravity session log.");
+        "Open and follow the latest Codex, Claude, or Antigravity session log for the current directory.");
     parser.addOption(sessionOption);
     QCommandLineOption versionOption(
         QStringList() << "version",
@@ -5547,12 +5547,14 @@ int main(int argc, char *argv[])
             }
         };
 
-        checkCandidate(mdv::latestCodexSession());
-        checkCandidate(mdv::latestClaudeSessionForCwd(QDir::currentPath()));
-        checkCandidate(mdv::latestAntigravitySession());
+        const QString cwd = QDir::currentPath();
+        checkCandidate(mdv::latestCodexSessionForCwd(cwd));
+        checkCandidate(mdv::latestClaudeSessionForCwd(cwd));
+        checkCandidate(mdv::latestAntigravitySessionForCwd(cwd));
 
         if (session.isEmpty()) {
-            QTextStream(stderr) << "mdv: no AI session log found under "
+            QTextStream(stderr) << "mdv: no AI session log found for " << cwd
+                                << " under "
                                 << QDir::home().filePath(QStringLiteral(".codex/sessions"))
                                 << ", " << QDir::home().filePath(QStringLiteral(".claude/projects"))
                                 << ", or " << QDir::home().filePath(QStringLiteral(".gemini/antigravity-cli/brain"))

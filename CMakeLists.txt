@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(mdv VERSION 0.6.5 LANGUAGES C CXX)
+project(mdv VERSION 0.6.6 LANGUAGES C CXX)
 
 include(CTest)
 

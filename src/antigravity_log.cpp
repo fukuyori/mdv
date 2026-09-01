@@ -1,4 +1,5 @@
 #include "antigravity_log.h"
+#include "path_utils.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -8,7 +9,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSet>
 #include <QStringList>
+#include <QUrl>
 
 #include <algorithm>
 #include <utility>
@@ -101,6 +104,75 @@ bool isUserRole(const QJsonObject &entry)
     return false;
 }
 
+QString workspacePath(const QString &raw)
+{
+    const QUrl url(raw);
+    return url.isLocalFile() ? url.toLocalFile() : raw;
+}
+
+bool isSafeConversationId(const QString &id)
+{
+    return !id.isEmpty() && id != QLatin1String(".") && id != QLatin1String("..")
+        && !id.contains(QLatin1Char('/')) && !id.contains(QLatin1Char('\\'));
+}
+
+void addMatchingMetadataConversations(
+    const QString &metadataPath, const QString &cwd, QSet<QString> &conversationIds)
+{
+    QFile file(metadataPath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return;
+    }
+    const QJsonObject conversations = QJsonDocument::fromJson(file.readAll()).object()
+                                          .value(QStringLiteral("conversations")).toObject();
+    for (auto it = conversations.constBegin(); it != conversations.constEnd(); ++it) {
+        const QJsonArray workspaces = it.value().toObject()
+                                          .value(QStringLiteral("summary")).toObject()
+                                          .value(QStringLiteral("WorkspaceURIs")).toArray();
+        for (const QJsonValue &workspace : workspaces) {
+            if (pathsReferToSameLocation(workspacePath(workspace.toString()), cwd)) {
+                if (isSafeConversationId(it.key())) {
+                    conversationIds.insert(it.key());
+                }
+                break;
+            }
+        }
+    }
+}
+
+void addMatchingLastConversations(
+    const QString &cachePath, const QString &cwd, QSet<QString> &conversationIds)
+{
+    QFile file(cachePath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return;
+    }
+    const QJsonObject mappings = QJsonDocument::fromJson(file.readAll()).object();
+    for (auto it = mappings.constBegin(); it != mappings.constEnd(); ++it) {
+        if (pathsReferToSameLocation(workspacePath(it.key()), cwd)) {
+            const QString id = it.value().toString();
+            if (isSafeConversationId(id)) {
+                conversationIds.insert(id);
+            }
+        }
+    }
+}
+
+QString latestValidTranscript(const std::vector<std::pair<QDateTime, QString>> &candidates)
+{
+    for (const auto &[modified, path] : candidates) {
+        Q_UNUSED(modified);
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) {
+            continue;
+        }
+        if (isAntigravitySessionLog(path, file.read(4096))) {
+            return path;
+        }
+    }
+    return {};
+}
+
 } // namespace
 
 bool isAntigravitySessionLog(const QString &path, const QByteArray &sample)
@@ -146,6 +218,44 @@ bool isAntigravitySessionLog(const QString &path, const QByteArray &sample)
     return false;
 }
 
+QString latestAntigravitySessionForCwd(
+    const QString &cwd, const QString &antigravityRoot)
+{
+    const QString root = antigravityRoot.isEmpty()
+        ? QDir::home().filePath(QStringLiteral(".gemini/antigravity-cli"))
+        : antigravityRoot;
+    const QDir cacheDir(QDir(root).filePath(QStringLiteral("cache")));
+    QSet<QString> conversationIds;
+    addMatchingMetadataConversations(
+        cacheDir.filePath(QStringLiteral("conversation_metadata.json")), cwd,
+        conversationIds);
+    addMatchingLastConversations(
+        cacheDir.filePath(QStringLiteral("last_conversations.json")), cwd,
+        conversationIds);
+
+    std::vector<std::pair<QDateTime, QString>> candidates;
+    const QDir brainDir(QDir(root).filePath(QStringLiteral("brain")));
+    for (const QString &id : conversationIds) {
+        const QDir logsDir(brainDir.filePath(
+            id + QStringLiteral("/.system_generated/logs")));
+        for (const QString &name : {QStringLiteral("transcript.jsonl"),
+                 QStringLiteral("transcript_full.jsonl")}) {
+            const QFileInfo info(logsDir.filePath(name));
+            if (info.isFile()) {
+                candidates.emplace_back(info.lastModified(), info.absoluteFilePath());
+            }
+        }
+    }
+    std::sort(candidates.begin(), candidates.end(),
+        [](const auto &a, const auto &b) {
+            if (a.first != b.first) {
+                return a.first > b.first;
+            }
+            return a.second > b.second;
+        });
+    return latestValidTranscript(candidates);
+}
+
 QString latestAntigravitySession(const QString &brainRoot)
 {
     const QString root = brainRoot.isEmpty()
@@ -170,18 +280,7 @@ QString latestAntigravitySession(const QString &brainRoot)
             return a.second > b.second;
         });
 
-    for (const auto &[modified, path] : candidates) {
-        Q_UNUSED(modified);
-        QFile file(path);
-        if (!file.open(QIODevice::ReadOnly)) {
-            continue;
-        }
-        const QByteArray sample = file.read(4096);
-        if (isAntigravitySessionLog(path, sample)) {
-            return path;
-        }
-    }
-    return {};
+    return latestValidTranscript(candidates);
 }
 
 QString renderAntigravitySessionLog(

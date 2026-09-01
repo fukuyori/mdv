@@ -1,4 +1,5 @@
 #include "codex_log.h"
+#include "path_utils.h"
 
 #include <QDir>
 #include <QDirIterator>
@@ -118,13 +119,9 @@ std::vector<std::pair<QDateTime, QString>> sessionCandidates(const QString &root
 
 QByteArray readSessionMetadata(QFile &file)
 {
-    QByteArray sample = file.read(sessionMetadataMaxBytes + 1);
-    const qsizetype newline = sample.indexOf('\n');
-    if (newline >= 0) {
-        sample.truncate(newline + 1);
-        return sample;
-    }
-    if (sample.size() > sessionMetadataMaxBytes || !file.atEnd()) {
+    const QByteArray sample = file.readLine(sessionMetadataMaxBytes + 1);
+    if (sample.size() > sessionMetadataMaxBytes
+        || (!sample.endsWith('\n') && !file.atEnd())) {
         return {};
     }
     return sample;
@@ -168,22 +165,20 @@ bool isCodexEventLog(const QString &path, const QByteArray &sample)
 
 bool codexSessionMatchesCwd(const QByteArray &sample, const QString &cwd)
 {
-    return sessionCwd(sample) == cwd;
+    return pathsReferToSameLocation(sessionCwd(sample), cwd);
 }
 
-QString latestCodexSessionForCwd(const QString &cwd)
+QString latestCodexSessionForCwd(const QString &cwd, const QString &sessionsRoot)
 {
-    const QString root = QDir::home().filePath(QStringLiteral(".codex/sessions"));
+    const QString root = sessionsRoot.isEmpty()
+        ? QDir::home().filePath(QStringLiteral(".codex/sessions"))
+        : sessionsRoot;
     const auto candidates = sessionCandidates(root);
 
-    // The session's working directory is only recorded inside the file, so
-    // inspect the newest logs' heads and stop at the first match; cap the
-    // probing so a large history does not stall startup.
-    int probed = 0;
+    // The session's working directory is recorded in the first event. Inspect
+    // candidates from newest to oldest and stop at the first project match.
     for (const auto &[modified, path] : candidates) {
-        if (++probed > 100) {
-            break;
-        }
+        Q_UNUSED(modified);
         QFile file(path);
         if (!file.open(QIODevice::ReadOnly)) {
             continue;

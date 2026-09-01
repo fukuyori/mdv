@@ -78,6 +78,11 @@ int main()
         R"json({"type":"session_meta","payload":{"id":"session-id","cwd":"/home/fuk/project"}})json";
     require(mdv::codexSessionMatchesCwd(metaLine, QStringLiteral("/home/fuk/project")),
         "matching session cwd was not detected");
+    const QByteArray normalizedMetaLine =
+        R"json({"type":"session_meta","payload":{"id":"session-id","cwd":"/home/fuk/project/."}})json";
+    require(mdv::codexSessionMatchesCwd(
+                normalizedMetaLine, QStringLiteral("/home/fuk/project")),
+        "an equivalent normalized session cwd was not detected");
     require(!mdv::codexSessionMatchesCwd(metaLine, QStringLiteral("/home/fuk/other")),
         "non-matching session cwd was accepted");
     require(!mdv::codexSessionMatchesCwd(R"json({"type":"ordinary"})json", QStringLiteral("/home/fuk/project")),
@@ -92,6 +97,7 @@ int main()
         "could not create a newer session directory");
     const QString older = root.filePath(QStringLiteral("2026/08/28/rollout-older.jsonl"));
     const QString newest = root.filePath(QStringLiteral("2026/08/29/rollout-newest.jsonl"));
+    const QString foreign = root.filePath(QStringLiteral("2026/08/29/rollout-foreign.jsonl"));
     const QString invalid = root.filePath(QStringLiteral("2026/08/29/rollout-invalid.jsonl"));
     const QDateTime now = QDateTime::currentDateTimeUtc();
     const QByteArray longMetaLine = QByteArrayLiteral(
@@ -102,14 +108,23 @@ int main()
         "long session metadata was not parsed");
     writeLog(older, metaLine, now.addSecs(-20));
     writeLog(newest, longMetaLine, now.addSecs(-10));
+    writeLog(foreign,
+        QByteArrayLiteral(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"foreign\","
+            "\"cwd\":\"/home/fuk/other\"}}\n"),
+        now.addSecs(-5));
     writeLog(invalid, QByteArrayLiteral("{incomplete"), now);
     QFile persistedNewest(newest);
     require(persistedNewest.open(QIODevice::ReadOnly), "could not reopen the long session log");
     require(mdv::codexSessionMatchesCwd(
                 persistedNewest.readAll(), QStringLiteral("/home/fuk/project")),
         "persisted long session metadata was not parsed");
+    const QString selectedForCwd = mdv::latestCodexSessionForCwd(
+        QStringLiteral("/home/fuk/project"), sessions.path());
+    require(selectedForCwd == newest,
+        "a newer Codex session from another working directory was selected");
     const QString selected = mdv::latestCodexSession(sessions.path());
-    require(selected == newest, "the newest valid Codex session was not selected");
+    require(selected == foreign, "the newest valid Codex session was not selected");
 
     QTemporaryDir emptySessions;
     require(emptySessions.isValid(), "could not create an empty sessions directory");
