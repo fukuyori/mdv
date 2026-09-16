@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(mdv VERSION 0.6.6 LANGUAGES C CXX)
+project(mdv VERSION 0.6.7 LANGUAGES C CXX)
 
 include(CTest)
 
@@ -43,6 +43,7 @@ if(APPLE)
         src/preview_interceptor.cpp
         src/preview_markdown.cpp
         src/preview_policy.cpp
+        src/translation_validation.cpp
         resources/mdv.qrc
         resources/macos/mdv.icns
     )
@@ -58,6 +59,7 @@ elseif(WIN32)
         src/preview_interceptor.cpp
         src/preview_markdown.cpp
         src/preview_policy.cpp
+        src/translation_validation.cpp
         resources/mdv.qrc
         resources/windows/mdv.rc
     )
@@ -70,6 +72,7 @@ else()
         src/preview_interceptor.cpp
         src/preview_markdown.cpp
         src/preview_policy.cpp
+        src/translation_validation.cpp
         resources/mdv.qrc
     )
 endif()
@@ -160,6 +163,19 @@ if(BUILD_TESTING)
     target_link_libraries(mdv_preview_policy_test PRIVATE Qt6::Core)
     add_test(NAME mdv_preview_policy_test COMMAND mdv_preview_policy_test)
 
+    add_executable(mdv_preview_scroll_test tests/preview_scroll_test.cpp)
+    target_include_directories(mdv_preview_scroll_test PRIVATE src)
+    target_link_libraries(mdv_preview_scroll_test PRIVATE Qt6::WebEngineWidgets)
+    add_test(NAME mdv_preview_scroll_test COMMAND mdv_preview_scroll_test)
+
+    add_executable(mdv_translation_validation_test
+        tests/translation_validation_test.cpp
+        src/translation_validation.cpp
+    )
+    target_include_directories(mdv_translation_validation_test PRIVATE src)
+    target_link_libraries(mdv_translation_validation_test PRIVATE Qt6::Core)
+    add_test(NAME mdv_translation_validation_test COMMAND mdv_translation_validation_test)
+
     # Loads a hostile document into a real (offscreen) WebEngine page with
     # the production CSP and request interceptor, and checks that no script
     # runs, no file outside the document directory is read, and no network
@@ -177,6 +193,10 @@ if(BUILD_TESTING)
     set(MDV_WEBENGINE_TEST_CHROMIUM_FLAGS "--disable-gpu" CACHE STRING
         "QTWEBENGINE_CHROMIUM_FLAGS used when running mdv_preview_webengine_test")
     set_tests_properties(mdv_preview_webengine_test PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QTWEBENGINE_CHROMIUM_FLAGS=${MDV_WEBENGINE_TEST_CHROMIUM_FLAGS}"
+        TIMEOUT 120
+    )
+    set_tests_properties(mdv_preview_scroll_test PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QTWEBENGINE_CHROMIUM_FLAGS=${MDV_WEBENGINE_TEST_CHROMIUM_FLAGS}"
         TIMEOUT 120
     )

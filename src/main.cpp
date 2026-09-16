@@ -104,9 +104,11 @@
 #include "preview_interceptor.h"
 #include "preview_markdown.h"
 #include "preview_policy.h"
+#include "preview_scroll_script.h"
+#include "translation_validation.h"
 
 #ifndef MDV_VERSION
-#define MDV_VERSION "0.6.6"
+#define MDV_VERSION "0.6.7"
 #endif
 
 // ---------------------------------------------------------------------------
@@ -352,6 +354,7 @@ static QString previewScript()
         "var __mdvFollowMode = false;"
         "var __mdvFollowTail = false;"
         "var __mdvPausedScrollY = 0;"
+        ) + preview_scroll::script() + QStringLiteral(
         "new QWebChannel(qt.webChannelTransport, function(channel) {"
         "  __mdvBridge = channel.objects.mdv;"
         "});"
@@ -498,7 +501,7 @@ static QString previewScript()
         "    }"
         "  }"
         "}"
-        "async function __mdvRenderMermaid(nodes, generation) {"
+        "async function __mdvRenderMermaid(nodes, generation, scrollAnchor) {"
         "  if (typeof globalThis.mermaid !== 'undefined') {"
         "    for (var i = 0; i < nodes.length; i++) {"
         "      var node = nodes[i];"
@@ -525,13 +528,17 @@ static QString previewScript()
         "      }"
         "    }"
         "  }"
-        "  if (generation === __mdvRenderGeneration && __mdvBridge)"
-        "    __mdvBridge.extensionsRendered();"
+        "  if (generation === __mdvRenderGeneration) {"
+        "    if (scrollAnchor) __mdvRestoreScrollAnchor(document.getElementById('content'), scrollAnchor, generation);"
+        "    if (__mdvBridge) __mdvBridge.extensionsRendered();"
+        "  }"
         "}"
-        "function __mdvSetContent(html) {"
+        "function __mdvSetContent(html, preserveScroll) {"
         "  var generation = ++__mdvRenderGeneration;"
         "  if (__mdvFollowMode && !__mdvFollowTail) __mdvPausedScrollY = window.scrollY;"
         "  var c = document.getElementById('content');"
+        "  var scrollAnchor = preserveScroll ? __mdvCaptureScrollAnchor(c) : null;"
+        "  if (scrollAnchor) __mdvProgTs = Date.now();"
         "  c.innerHTML = html;"
         "  __mdvRenderAlerts(c);"
         "  __mdvHighlightCode(c);"
@@ -576,7 +583,7 @@ static QString previewScript()
         "    wrapper.appendChild(button);"
         "  }"
         "  __mdvRenderMath(c);"
-        "  __mdvRenderMermaid(mermaidNodes, generation);"
+        "  __mdvRenderMermaid(mermaidNodes, generation, scrollAnchor);"
         "  var used = {};"
         "  var hs = c.querySelectorAll('h1,h2,h3,h4,h5,h6');"
         "  for (var i = 0; i < hs.length; i++) {"
@@ -590,6 +597,9 @@ static QString previewScript()
         "    hs[i].id = id;"
         "  }"
         "  if (__mdvFollowMode) requestAnimationFrame(__mdvRestoreFollowPosition);"
+        "  else if (scrollAnchor) requestAnimationFrame(function() {"
+        "    __mdvRestoreScrollAnchor(c, scrollAnchor, generation);"
+        "  });"
         "}"
         "function __mdvSync(count, segment, t, fraction) {"
         "  var hs = __mdvHeadings();"
@@ -950,8 +960,9 @@ private:
             text.remove(thinkBlock);
             text = text.trimmed();
 
-            if (text.isEmpty()) {
-                emit blockFailed(job.key, QStringLiteral("empty response"));
+            const QString rejectionReason = translation_validation::rejectionReason(job.text, text);
+            if (!rejectionReason.isEmpty()) {
+                emit blockFailed(job.key, rejectionReason);
             } else {
                 emit translated(job.key, text);
             }
@@ -1537,7 +1548,7 @@ private:
 
     void reloadPreviewTemplate();
     void initializePreviewExtensions();
-    void pushPreviewContent();
+    void pushPreviewContent(bool preserveScroll = false);
     QString buildPreviewTemplate() const;
     QUrl previewBaseUrl() const
     {
@@ -1641,6 +1652,7 @@ private:
     QUrl loadedPreviewBaseUrl_;
     PreviewRequestInterceptor *previewInterceptor_ = nullptr;
     bool previewLoaded_ = false;
+    bool preservePreviewScrollPending_ = false;
     quint64 previewTemplateGeneration_ = 0;
 
     QString currentFile_;
@@ -3602,6 +3614,8 @@ DocumentTab::DocumentTab(MainWindow *window, QWidget *parent)
     bridge->onExtensionsRendered = [this] {
         if (followMode_) {
             preview_->page()->runJavaScript(QStringLiteral("__mdvRestoreFollowPosition();"));
+        } else if (preservePreviewScrollPending_) {
+            preservePreviewScrollPending_ = false;
         } else {
             syncPreviewToEditor();
         }
@@ -4951,7 +4965,7 @@ void DocumentTab::refreshTranslatedPreview()
 
     pendingPreviewHtml_ = composePreviewHtml();
     if (previewLoaded_) {
-        pushPreviewContent();
+        pushPreviewContent(true);
     }
 
     if (!isActive()) {
@@ -5011,15 +5025,19 @@ void DocumentTab::initializePreviewExtensions()
         });
 }
 
-void DocumentTab::pushPreviewContent()
+void DocumentTab::pushPreviewContent(bool preserveScroll)
 {
+    preservePreviewScrollPending_ = preserveScroll;
     const QByteArray json = QJsonDocument(QJsonArray{pendingPreviewHtml_}).toJson(QJsonDocument::Compact);
     preview_->page()->runJavaScript(
         QStringLiteral("__mdvSetContent(") + QString::fromUtf8(json)
-        + QStringLiteral("[0]);__mdvSetFollowTail(")
+        + QStringLiteral("[0],") + (preserveScroll ? QStringLiteral("true") : QStringLiteral("false"))
+        + QStringLiteral(");__mdvSetFollowTail(")
         + (followMode_ ? QStringLiteral("true") : QStringLiteral("false"))
         + QStringLiteral(");"));
-    syncPreviewToEditor();
+    if (!preserveScroll) {
+        syncPreviewToEditor();
+    }
 
     // Replacing the content drops Chromium's find highlights.
     window_->refreshSearchHighlightIfNeeded(this);

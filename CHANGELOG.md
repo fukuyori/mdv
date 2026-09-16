@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 English | [日本語](CHANGELOG.ja.md)
 
+## [0.6.7] - 2026-09-16
+
+### Fixed
+
+- Translation responses that unexpectedly expand into unrelated documents or
+  change Markdown block structure are rejected instead of replacing the
+  bilingual or translated preview with incorrect content.
+- The preview keeps its visible block and offset while completed translations
+  are inserted, instead of jumping back to the beginning of the document.
+
 ## [0.6.6] - 2026-09-01
 
 ### Fixed
