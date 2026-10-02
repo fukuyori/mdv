@@ -43,14 +43,20 @@ cmake_args=(
   -B "$BUILD_DIR"
   -DCMAKE_BUILD_TYPE="$CONFIG"
   -DCMAKE_DISABLE_FIND_PACKAGE_WrapVulkanHeaders=ON
+  -U 'Qt6*_DIR'
 )
 if [[ -n "${QT_ROOT:-}" ]]; then
-  cmake_args+=( -DCMAKE_PREFIX_PATH="$QT_ROOT" )
+  cmake_args+=(
+    -DCMAKE_PREFIX_PATH="$QT_ROOT"
+    -DQt6_DIR="$QT_ROOT/lib/cmake/Qt6"
+  )
 fi
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
+  MACOS_SDK_ROOT="$(xcrun --sdk macosx --show-sdk-path)"
   cmake_args+=(
     -DCMAKE_OSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-26.0}"
+    -DCMAKE_OSX_SYSROOT="$MACOS_SDK_ROOT"
   )
 fi
 
