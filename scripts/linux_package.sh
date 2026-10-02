@@ -264,7 +264,11 @@ build_appimage() {
         --output appimage
   )
   out="$DIST_DIR/mdv-${VERSION}-x86_64.AppImage"
-  [[ -f "$out" ]] && log "Created $out" || warn "AppImage step finished but no output found."
+  if [[ -f "$out" ]]; then
+    log "Created $out"
+  else
+    warn "AppImage step finished but no output found."
+  fi
 }
 
 # -------------------------------------------------------------------------

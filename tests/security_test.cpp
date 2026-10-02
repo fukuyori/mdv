@@ -44,6 +44,14 @@ int main()
     require(escaped.find("&lt;img") != std::string::npos,
         "raw HTML was not rendered as escaped text");
 
+    const std::string remoteImageMarkdown =
+        "![](https://substackcdn.com/image/fetch/$s_!XYEq!,w_1456,c_limit,f_webp,q_auto:good,"
+        "fl_progressive:steep/https%3A%2F%2Fsubstack-post-media.s3.amazonaws.com%2Fpublic%2F"
+        "images%2F9f11eeb1-99f1-4d2b-881f-61da8ced7b9f_1314x912.png)";
+    const std::string remoteImageHtml = render(remoteImageMarkdown);
+    require(remoteImageHtml.find("<img src=\"https://substackcdn.com/image/fetch/") != std::string::npos,
+        "HTTPS Markdown image was not rendered as an image element");
+
     std::string repeatedReferences = "[x]: /destination \"title\"\n\n";
     for (int i = 0; i < 20000; ++i) {
         repeatedReferences += "[x] ";

@@ -110,6 +110,9 @@ jobs:
           arch: win64_msvc2022_64
           modules: ${{ env.QT_MODULES }}
           cache: true
+          # aqtinstall 3.3.0 predates the Qt 6.11+ Windows repository layout.
+          # Pin the merged upstream fix until a release containing it exists.
+          aqtsource: 'aqtinstall @ git+https://github.com/miurahr/aqtinstall@8c3695d4a4e1ceabf6a74dc6c79681656dc6b74b'
       - uses: ilammy/msvc-dev-cmd@v1
       - name: Configure
         shell: pwsh

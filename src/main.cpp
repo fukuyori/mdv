@@ -108,7 +108,7 @@
 #include "translation_validation.h"
 
 #ifndef MDV_VERSION
-#define MDV_VERSION "0.6.7"
+#define MDV_VERSION "0.7.0"
 #endif
 
 // ---------------------------------------------------------------------------
@@ -3583,9 +3583,10 @@ DocumentTab::DocumentTab(MainWindow *window, QWidget *parent)
         menu->setAttribute(Qt::WA_DeleteOnClose);
         menu->popup(preview_->mapToGlobal(pos));
     });
-    // An opened Markdown file is untrusted input. Do not let it trigger
-    // network requests (tracking images, localhost probes, or exfiltration).
-    preview_->settings()->setAttribute(QWebEngineSettings::LocalContentCanAccessRemoteUrls, false);
+    // An opened Markdown file is untrusted input. HTTPS image requests are
+    // allowed by both the CSP and request interceptor; every other remote
+    // resource type remains blocked there.
+    preview_->settings()->setAttribute(QWebEngineSettings::LocalContentCanAccessRemoteUrls, true);
     preview_->settings()->setAttribute(QWebEngineSettings::JavascriptCanOpenWindows, false);
     preview_->settings()->setAttribute(QWebEngineSettings::JavascriptCanAccessClipboard, false);
     preview_->settings()->setAttribute(QWebEngineSettings::LocalStorageEnabled, false);
@@ -5146,6 +5147,7 @@ QString DocumentTab::buildPreviewTemplate() const
 
     return QStringLiteral(
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+        "<meta name=\"referrer\" content=\"no-referrer\">"
         "<meta http-equiv=\"Content-Security-Policy\" content=\"")
         + contentSecurityPolicy.toHtmlEscaped()
         + QStringLiteral("\"><style>")

@@ -31,6 +31,7 @@ int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
     using preview_policy::allowsLocalResource;
+    using preview_policy::allowsRemoteImage;
 
     QTemporaryDir root;
     require(root.isValid(), "temporary directory unavailable");
@@ -67,6 +68,23 @@ int main(int argc, char **argv)
         "empty document directory must block everything");
     require(!allowsLocalResource(QUrl::fromLocalFile(docDir + "/assets/img.png"), docDir + "/nonexistent"),
         "nonexistent document directory must block everything");
+
+    require(allowsRemoteImage(QUrl(QStringLiteral(
+        "https://substackcdn.com/image/fetch/$s_!XYEq!,w_1456,c_limit,f_webp,q_auto:good,fl_progressive:steep/"
+        "https%3A%2F%2Fsubstack-post-media.s3.amazonaws.com%2Fpublic%2Fimages%2Fimage.png"))),
+        "HTTPS image URL must be allowed");
+    require(!allowsRemoteImage(QUrl(QStringLiteral("http://example.com/image.png"))),
+        "plain HTTP image URL must be blocked");
+    require(!allowsRemoteImage(QUrl(QStringLiteral("https://user:password@example.com/image.png"))),
+        "image URL with embedded credentials must be blocked");
+    require(!allowsRemoteImage(QUrl::fromLocalFile(docDir + "/assets/img.png")),
+        "local image URL must not pass the remote-image policy");
+
+    const QString csp = preview_policy::contentSecurityPolicy(QStringLiteral("test-nonce"));
+    require(csp.contains(QStringLiteral("img-src file: data: https:;")),
+        "CSP must allow HTTPS images");
+    require(csp.contains(QStringLiteral("connect-src 'none';")),
+        "CSP must continue blocking script-initiated connections");
 
 #ifdef Q_OS_UNIX
     require(QFile::link(outside + "/secret.txt", docDir + "/link.txt"), "create file symlink");

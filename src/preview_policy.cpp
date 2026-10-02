@@ -94,10 +94,19 @@ bool allowsLocalResource(const QUrl &url, const QString &documentDir)
     return isUnder(canonical, canonicalDir);
 }
 
+bool allowsRemoteImage(const QUrl &url)
+{
+    return url.isValid()
+        && url.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) == 0
+        && !url.host().isEmpty()
+        && url.userName().isEmpty()
+        && url.password().isEmpty();
+}
+
 QString contentSecurityPolicy(const QString &nonce)
 {
     return QStringLiteral(
-        "default-src 'none'; img-src file: data:; media-src file: data:; "
+        "default-src 'none'; img-src file: data: https:; media-src file: data:; "
         "style-src 'unsafe-inline'; font-src data:; script-src 'nonce-%1'; "
         "connect-src 'none'; object-src 'none'; frame-src 'none'; "
         "base-uri 'none'; form-action 'none'").arg(nonce);

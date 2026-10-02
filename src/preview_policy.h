@@ -14,9 +14,14 @@ namespace preview_policy {
 // directory (including through symlinks), and for directories.
 bool allowsLocalResource(const QUrl &url, const QString &documentDir);
 
+// Returns true only for HTTPS URLs suitable for an image request. Other
+// remote schemes and URLs containing embedded credentials are rejected.
+bool allowsRemoteImage(const QUrl &url);
+
 // The Content Security Policy applied to the preview document. Only scripts
-// carrying `nonce` run; images and media may come from file:/data: (further
-// narrowed by PreviewRequestInterceptor); everything else is denied.
+// carrying `nonce` run; images may additionally come from HTTPS, while local
+// images/media are further narrowed by PreviewRequestInterceptor. Everything
+// else is denied.
 QString contentSecurityPolicy(const QString &nonce);
 
 } // namespace preview_policy

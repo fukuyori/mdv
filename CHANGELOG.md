@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 English | [日本語](CHANGELOG.ja.md)
 
+## [0.7.0] - 2026-10-02
+
+### Added
+
+- Preview HTTPS image references while continuing to block plain HTTP images
+  and every other remote resource type.
+
+### Fixed
+
+- GitHub Actions now passes ShellCheck for AppImage status reporting and uses
+  the upstream Qt 6.11 Windows repository-layout fix when installing Qt.
+
 ## [0.6.7] - 2026-09-16
 
 ### Fixed

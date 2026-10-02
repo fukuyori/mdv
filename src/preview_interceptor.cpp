@@ -12,9 +12,13 @@ void PreviewRequestInterceptor::interceptRequest(QWebEngineUrlRequestInfo &info)
         return;
     }
     const auto type = info.resourceType();
-    const bool mediaLike = type == QWebEngineUrlRequestInfo::ResourceTypeImage
-        || type == QWebEngineUrlRequestInfo::ResourceTypeMedia;
-    if (mediaLike && preview_policy::allowsLocalResource(url, documentDir_)) {
+    if (type == QWebEngineUrlRequestInfo::ResourceTypeImage
+        && preview_policy::allowsRemoteImage(url)) {
+        return;
+    }
+    if ((type == QWebEngineUrlRequestInfo::ResourceTypeImage
+            || type == QWebEngineUrlRequestInfo::ResourceTypeMedia)
+        && preview_policy::allowsLocalResource(url, documentDir_)) {
         return;
     }
     info.block(true);

@@ -126,7 +126,7 @@ int main(int argc, char **argv)
         .arg(trap.serverPort());
 
     QWebEnginePage page;
-    page.settings()->setAttribute(QWebEngineSettings::LocalContentCanAccessRemoteUrls, false);
+    page.settings()->setAttribute(QWebEngineSettings::LocalContentCanAccessRemoteUrls, true);
     page.settings()->setAttribute(QWebEngineSettings::JavascriptCanOpenWindows, false);
     page.settings()->setAttribute(QWebEngineSettings::JavascriptCanAccessClipboard, false);
     page.settings()->setAttribute(QWebEngineSettings::LocalStorageEnabled, false);
@@ -166,7 +166,7 @@ int main(int argc, char **argv)
 #ifdef Q_OS_UNIX
     require(width("link") == 0, "symlink pointing outside must not load");
 #endif
-    require(width("remote") == 0, "remote image must not load");
+    require(width("remote") == 0, "plain HTTP remote image must not load");
     require(!js("window.__fetchOk").toBool(), "fetch must be blocked");
     require(js("window.__xhrText").toString().isEmpty(), "XHR must not read a local file");
     require(js("document.getElementById('frame').contentDocument === null "

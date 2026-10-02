@@ -62,6 +62,8 @@ Viewer mode (`-v`), with the editor pane hidden:
   the preview (all matches marked, current match emphasized and scrolled to)
 - Undo, redo, cut, copy, and paste text
 - Paste clipboard images or copied image files as Markdown image links
+- Display external images referenced by HTTPS URLs; plain HTTP images remain
+  blocked
 - Render Mermaid diagrams and inline or display LaTeX math directly in the
   preview, using bundled offline libraries
 - Highlight fenced code blocks according to their language
@@ -131,9 +133,10 @@ GitHub-style alerts use a blockquote whose first line contains one of
 The bundled Highlight.js common-language build and its light, dark, and sepia
 styles work offline. Alert titles are displayed in the selected UI language.
 
-Raw HTML is shown as text rather than executed, remote resources are never
-fetched, and local images only load from the document's own directory. The
-[Security](#security) section describes the full model.
+Raw HTML is shown as text rather than executed. HTTPS images may be fetched;
+other remote resources are blocked, and local images only load from the
+document's own directory. The [Security](#security) section describes the
+full model.
 
 ## Build
 
@@ -444,9 +447,12 @@ below are enforced in code and, where marked, covered by the test suite.
   `frame-src`, `object-src`, `form-action`, and `base-uri`. *(tested)*
 - **Local files.** A request interceptor allows images and media only from
   the document's own directory; `..` escapes, absolute paths, and symbolic
-  links that resolve elsewhere are blocked before any file is opened. Remote
-  URLs, JavaScript-opened windows, clipboard access from script, and local
-  storage are disabled in WebEngine. *(tested)*
+  links that resolve elsewhere are blocked before any file is opened. *(tested)*
+- **Remote images.** HTTPS image references are allowed. Plain HTTP images and
+  every other remote resource type remain blocked by both CSP and the request
+  interceptor. Loading an external image discloses the connection's IP address
+  and request metadata to its host. JavaScript-opened windows, clipboard access
+  from script, and local storage are disabled in WebEngine. *(tested)*
 - **Links.** Clicking a link never navigates the preview; `http`, `https`,
   and `mailto` open in the system browser and other schemes are ignored.
 - **Bundled parsers.** md4c 0.5.3 and Highlight.js 11.12.0 include upstream
